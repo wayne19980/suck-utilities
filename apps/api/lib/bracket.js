@@ -45,6 +45,27 @@ export function liquipediaBracketTemplate(playerCount) {
 }
 
 /**
+ * Unique Liquipedia bracket id for an event. These ids have a fixed length:
+ * a six-letter series prefix plus a four-digit event number, e.g. SUCK ST #7
+ * -> suckst0007 and SUCK #7 -> AXsuck0007. The ST series must not reuse the
+ * older AXsuck prefix.
+ */
+export function liquipediaBracketId(tournamentId, tournamentName) {
+  const id = String(tournamentId || "");
+  // Prefer the number written at the end of the event name (#7), then the
+  // tournament id's trailing digits. The suffix is always four numeric digits.
+  const name = String(tournamentName || "");
+  const number =
+    name.match(/#\s*(\d+)/)?.[1] ||
+    name.match(/(\d+)\s*$/)?.[1] ||
+    id.match(/(\d+)\s*$/)?.[1] ||
+    "";
+  const suffix = number ? number.slice(-4).padStart(4, "0") : "0000";
+  const prefix = id.toLowerCase().startsWith("suckst") ? "suckst" : "AXsuck";
+  return `${prefix}${suffix}`;
+}
+
+/**
  * Describe the single-elimination bracket for n players.
  *
  * P = next power of two; the bracket's second round has P/2 slots.

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   describeBracket,
   LIQUIPEDIA_BRACKET_TEMPLATES,
+  liquipediaBracketId,
   liquipediaBracketTemplate,
 } from "../lib/bracket.js";
 
@@ -83,4 +84,24 @@ test("17/31/32 templates match the documented structures", () => {
   assert.equal(liquipediaBracketTemplate(31), "Bracket/2L1DH4LH8LH16L");
   assert.equal(liquipediaBracketTemplate(32), "Bracket/32");
   assert.equal(Object.keys(LIQUIPEDIA_BRACKET_TEMPLATES).length, 31);
+});
+
+test("SUCK ST bracket ids use their own prefix and a four-digit event number", () => {
+  assert.equal(liquipediaBracketId("suckst7", "SUCK ST #7"), "suckst0007");
+  assert.equal(liquipediaBracketId("suckst12", "SUCK ST #12"), "suckst0012");
+  // The #number wins even when a year follows it.
+  assert.equal(liquipediaBracketId("suckst72026", "SUCK ST #7 (2026)"), "suckst0007");
+  // Older SUCK events keep the AXsuck prefix.
+  assert.equal(liquipediaBracketId("axsuck7", "SUCK #7"), "AXsuck0007");
+  // The event number falls back to the id when the name has no trailing digits.
+  assert.equal(liquipediaBracketId("suckst7", "SUCK ST"), "suckst0007");
+
+  // Liquipedia ids are a fixed ten characters: 6-letter prefix + 4 digits.
+  for (const id of [
+    liquipediaBracketId("suckst7", "SUCK ST #7"),
+    liquipediaBracketId("axsuck7", "SUCK #7"),
+  ]) {
+    assert.equal(id.length, 10);
+    assert.match(id, /^[A-Za-z]{6}\d{4}$/);
+  }
 });

@@ -8,7 +8,7 @@ import os from 'os';
 import { MatchRepo } from '../repositories/match-repo.js';
 import { getPlayerDisplayName } from '../repositories/player-repo.js';
 import { TournamentAccountRepo } from '../repositories/tournament-account-repo.js';
-import { liquipediaBracketTemplate } from '../lib/bracket.js';
+import { liquipediaBracketId, liquipediaBracketTemplate } from '../lib/bracket.js';
 
 const execPromise = util.promisify(exec);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1163,9 +1163,7 @@ export default async function replaysRoutes(fastify) {
       liquipediaBracketTemplate(playerCount) ||
       liquipediaBracketTemplate(matchCount + 1) ||
       "Bracket/16";
-    const tournamentIdStr = tournamentNumber.padStart(4, "0");
-
-    wikiScript += `{{Bracket|${bracketTemplate}|id=AXsuck${tournamentIdStr}\n`;
+    wikiScript += `{{Bracket|${bracketTemplate}|id=${liquipediaBracketId(tournamentId, tournament.name)}\n`;
 
     // Group matches by round for bracket structure rendering
     const maxDbRound = Math.max(...matches.map(m => m.round), 1);
