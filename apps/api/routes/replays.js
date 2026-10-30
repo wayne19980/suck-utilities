@@ -723,16 +723,12 @@ export default async function replaysRoutes(fastify) {
           else if (p2Won && !p1Won) score2++;
         });
 
-        if (score1 > 0 || score2 > 0) {
-          let winnerId = null;
-          if (score1 > score2) winnerId = match.player2_id;
-          else if (score2 > score1) winnerId = match.player1_id;
-
-          await db.query(`
-            UPDATE axsuck.matches SET score1 = $1, score2 = $2, winner_id = $3, status = 'completed'
-            WHERE id = $4
-          `, [score1, score2, winnerId, match.id]);
-
+        if (score1 !== score2) {
+          // Let the repo apply the event's advancement rule (winner advances
+          // or the SUCK-classic loser advances) instead of assuming one.
+          // A tie can happen while a best-of series is only partly imported;
+          // leave the match alone until the series has a winner.
+          await matchRepo.submitResult(match.id, score1, score2);
           await matchRepo.advanceWinner(tournamentId, match.id);
         }
 

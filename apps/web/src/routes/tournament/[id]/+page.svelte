@@ -313,6 +313,7 @@
   // Modal for match results
   let showMatchDialog = $state(false);
   let selectedMatch = $state(null);
+  let loserAdvances = $derived(Boolean(tournament?.loser_advances ?? 1));
   let resultScore1 = $state(0);
   let resultScore2 = $state(0);
   let submittingResult = $state(false);
@@ -1425,11 +1426,13 @@
 
     try {
       await API.submitResult(tid, selectedMatch.id, score1, score2);
-      const advancerId = isPlayer1
-        ? selectedMatch.player2_id
-        : selectedMatch.player1_id;
+      const advancerId = loserAdvances
+        ? isPlayer1
+          ? selectedMatch.player2_id
+          : selectedMatch.player1_id
+        : winnerId;
       toast.success(
-        `已判定游戏获胜者为 ${playerName(winnerId)}，败者 ${playerName(advancerId)} 晋级`,
+        `已判定游戏获胜者为 ${playerName(winnerId)}，${loserAdvances ? "败者" : "胜者"} ${playerName(advancerId)} 晋级`,
       );
       if (tournament && tournament.active_match_id === selectedMatch.id) {
         await API.setActiveMatch(tid, null);
@@ -1468,7 +1471,7 @@
     submittingResult = true;
     try {
       await API.submitWalkover(tid, selectedMatch.id, winnerId);
-      toast.success("已记录弃权并晋级胜者");
+      toast.success(`已记录弃权，${playerName(winnerId)} 晋级`);
       if (tournament && tournament.active_match_id === selectedMatch.id) {
         await API.setActiveMatch(tid, null);
         if (streamMode) await showHybridScene();
@@ -3026,7 +3029,7 @@
           • 创建于 {new Date(
             tournament.created_at,
           ).toLocaleDateString("zh-CN")}
-          • 晋级规则: <span class="font-bold text-primary">{tournament.loser_advances ? "败者晋级 (SUCK 经典)" : "胜者晋级 (常规单淘)"}</span>
+          • 晋级规则: <span class="font-bold text-primary">{loserAdvances ? "败者晋级 (SUCK 经典)" : "胜者晋级 (常规单淘)"}</span>
         </p>
         {#if tournament.scheduled_time}
           <div
@@ -4029,13 +4032,20 @@
           <h4
             class="text-xs font-bold text-muted-foreground uppercase tracking-widest"
           >
-            判定游戏获胜方 (败者晋级)
+            判定游戏获胜方 ({loserAdvances ? "败者晋级" : "胜者晋级"})
           </h4>
           <p class="text-[10px] text-muted-foreground/85 leading-normal">
-            本比赛为“败者晋级杯赛”，星际2游戏获胜的一方记大分 1
-            分并被淘汰，失败的一方记 0 分并晋级下一轮。请选择本局星际2游戏的<strong
-              >获胜者</strong
-            >：
+            {#if loserAdvances}
+              本比赛为“败者晋级杯赛”，星际2游戏获胜的一方记大分 1
+              分并被淘汰，失败的一方记 0 分并晋级下一轮。请选择本局星际2游戏的<strong
+                >获胜者</strong
+              >：
+            {:else}
+              本比赛为“胜者晋级杯赛”，星际2游戏获胜的一方记大分 1
+              分并晋级下一轮，失败的一方记 0 分并被淘汰。请选择本局星际2游戏的<strong
+                >获胜者</strong
+              >：
+            {/if}
           </p>
           <div class="flex flex-col gap-2 mt-1">
             <Button
@@ -4043,14 +4053,14 @@
               onclick={() => selectGameWinner(selectedMatch.player1_id)}
               class="w-full text-xs font-bold h-9 cursor-pointer justify-center"
             >
-              游戏获胜者: {playerName(selectedMatch.player1_id)} (对方晋级)
+              游戏获胜者: {playerName(selectedMatch.player1_id)} ({loserAdvances ? "对方晋级" : "晋级下一轮"})
             </Button>
             <Button
               disabled={submittingResult}
               onclick={() => selectGameWinner(selectedMatch.player2_id)}
               class="w-full text-xs font-bold h-9 cursor-pointer justify-center"
             >
-              游戏获胜者: {playerName(selectedMatch.player2_id)} (对方晋级)
+              游戏获胜者: {playerName(selectedMatch.player2_id)} ({loserAdvances ? "对方晋级" : "晋级下一轮"})
             </Button>
           </div>
         </div>
