@@ -528,11 +528,13 @@ export default async function replaysRoutes(fastify) {
       throw fastify.httpErrors.badRequest('No replays provided.');
     }
 
-    const tourneyRes = await db.query('SELECT id FROM axsuck.tournaments WHERE id = $1', [tournamentId]);
+    const tourneyRes = await db.query('SELECT id, best_of FROM axsuck.tournaments WHERE id = $1', [tournamentId]);
     const tournament = tourneyRes.rows[0];
     if (!tournament) {
       throw fastify.httpErrors.notFound('Tournament not found.');
     }
+    const bestOf = Math.max(1, Number(tournament.best_of) || 1);
+    const bestOfTarget = Math.floor(bestOf / 2) + 1;
 
     const envCheck = await checkPythonEnvironment();
     if (!envCheck.ok) {
@@ -723,11 +725,12 @@ export default async function replaysRoutes(fastify) {
           else if (p2Won && !p1Won) score2++;
         });
 
-        if (score1 !== score2) {
+        // Only complete the match once the series has a winner. A partly
+        // imported best-of series (e.g. 1-0 in a BO3) stays pending.
+        const seriesTop = Math.max(score1, score2);
+        if (score1 !== score2 && seriesTop >= bestOfTarget && seriesTop <= bestOf) {
           // Let the repo apply the event's advancement rule (winner advances
           // or the SUCK-classic loser advances) instead of assuming one.
-          // A tie can happen while a best-of series is only partly imported;
-          // leave the match alone until the series has a winner.
           await matchRepo.submitResult(match.id, score1, score2);
           await matchRepo.advanceWinner(tournamentId, match.id);
         }
@@ -1053,6 +1056,7 @@ export default async function replaysRoutes(fastify) {
 
     const tournamentNumberMatch = tournament.name.match(/\d+$/);
     const tournamentNumber = tournamentNumberMatch ? tournamentNumberMatch[0] : 'XXX';
+    const eventBestOf = Math.max(1, Number(tournament.best_of) || 1);
 
     // Dynamically build web application tournament URL using referer header
     let bracketUrl = `https://challonge.com/succk${tournamentNumber}`;
@@ -1091,10 +1095,8 @@ export default async function replaysRoutes(fastify) {
 
     const matchCounts = matches.map(m => (replaysByMatchId[m.id] || []).length).filter(c => c > 0);
     const maxGames = matchCounts.length > 0 ? Math.max(...matchCounts) : 1;
-    let formatBo = "Bo1";
-    if (maxGames > 1) {
-      formatBo = `Bo${maxGames % 2 === 0 ? maxGames + 1 : maxGames}`;
-    }
+    const inferredBestOf = maxGames > 1 ? (maxGames % 2 === 0 ? maxGames + 1 : maxGames) : 1;
+    const formatBo = `Bo${eventBestOf > 1 ? eventBestOf : inferredBestOf}`;
     wikiScript += `* 所有比赛均${formatBo} All matches are ${formatBo}\n`;
     wikiScript += `* 败者晋级 Loser of each match advance to the next round.\n\n`;
 
@@ -1200,8 +1202,10 @@ export default async function replaysRoutes(fastify) {
           wikiScript += `    |opponent1={{1Opponent|${p1Name}|score=${opp1Score}}}\n`;
           wikiScript += `    |opponent2={{1Opponent|${p2Name}|score=${opp2Score}}}\n`;
         } else {
-          const bestOf = numGames > 0 ? (numGames % 2 === 0 ? numGames + 1 : numGames) : 1;
-          wikiScript += `    |bestof=${bestOf}\n`;
+          const matchBestOf = eventBestOf > 1
+            ? eventBestOf
+            : (numGames > 0 ? (numGames % 2 === 0 ? numGames + 1 : numGames) : 1);
+          wikiScript += `    |bestof=${matchBestOf}\n`;
           wikiScript += `    |winner=${winner}\n`;
 
           let matchDateStr = `${formattedDate} 20:00:00 {{abbr/CST}}`;

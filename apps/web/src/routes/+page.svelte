@@ -15,6 +15,8 @@
   import DownloadIcon from "@lucide/svelte/icons/download";
   import ArrowRightIcon from "@lucide/svelte/icons/arrow-right";
   import TrophyIcon from "@lucide/svelte/icons/trophy";
+  import { formatInZone, toInstant } from "$lib/datetime.js";
+  import { timeZoneOverride } from "$lib/timezone.svelte.js";
 
   let tournaments = $state([]);
   let loading = $state(true);
@@ -37,6 +39,9 @@
 
   function startTimeLabel(raw) {
     if (!raw) return "";
+    // Stored as Beijing time: show it in the viewer's chosen / own time zone.
+    const instant = toInstant(raw);
+    if (instant) return formatInZone(instant, timeZoneOverride() || undefined);
     const m = String(raw).match(
       /(\d{4})[-/](\d{1,2})[-/](\d{1,2})[^\d]*(\d{1,2}):(\d{2})/,
     );
@@ -56,12 +61,15 @@
   }
 
   function ruleLabel(t) {
-    return t?.loser_advances ? "败者晋级" : "胜者晋级";
+    const bestOf = Math.max(1, Number(t?.best_of) || 1);
+    return `BO${bestOf} · ${t?.loser_advances ? "败者晋级" : "胜者晋级"}`;
   }
 
   function scheduledDateTime(t) {
     const raw = t?.scheduled_time;
     if (!raw) return null;
+    const instant = toInstant(raw);
+    if (instant) return instant;
     const m = String(raw).match(
       /(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[^\d]*(\d{1,2}):(\d{2}))?/,
     );
@@ -134,7 +142,28 @@
   let newName = $state("");
   let newCapacity = $state(128);
   let newLoserAdvances = $state(true);
+  let newBestOf = $state(1);
   let creating = $state(false);
+
+  const CREATE_TEMPLATES = [
+    { id: "classic", label: "SUCK 经典", bestOf: 1, loserAdvances: true },
+    { id: "standard", label: "常规单淘", bestOf: 1, loserAdvances: false },
+    { id: "bo3", label: "BO3 · 胜者晋级", bestOf: 3, loserAdvances: false },
+    { id: "bo5", label: "BO5 · 胜者晋级", bestOf: 5, loserAdvances: false },
+  ];
+
+  function applyCreateTemplate(template) {
+    newBestOf = template.bestOf;
+    newLoserAdvances = template.loserAdvances;
+  }
+
+  function applyTournamentSettings(tournamentId) {
+    const source = tournaments.find((t) => t.id === tournamentId);
+    if (!source) return;
+    newCapacity = Number(source.player_capacity) || newCapacity;
+    newBestOf = Math.max(1, Number(source.best_of) || 1);
+    newLoserAdvances = Boolean(source.loser_advances);
+  }
 
   // Divide tournaments
   let activeTournaments = $derived(
@@ -165,6 +194,7 @@
     newName = "";
     newCapacity = 128;
     newLoserAdvances = true;
+    newBestOf = 1;
     showCreateDialog = true;
   }
 
@@ -188,11 +218,13 @@
         name: trimmedName,
         player_capacity: newCapacity,
         hold_third_place: 0,
-        loser_advances: newLoserAdvances ? 1 : 0
+        loser_advances: newLoserAdvances ? 1 : 0,
+        best_of: newBestOf
       });
       toast.success(`赛事创建成功！(生成 ID: ${generatedId})`);
       newName = "";
       newCapacity = 128;
+      newBestOf = 1;
       showCreateDialog = false;
       await load();
     } catch (e) {
@@ -347,7 +379,12 @@
                 {#if t.scheduled_time}
                   <div class="flex items-center gap-1.5 text-primary text-xs font-bold whitespace-nowrap tabular-nums">
                     <ClockIcon class="w-4 h-4 shrink-0 animate-pulse" />
-                    <span>{startTimeLabel(t.scheduled_time)}</span>
+                    <span
+                      title={toInstant(t.scheduled_time)
+                        ? `北京时间 ${formatInZone(toInstant(t.scheduled_time), "Asia/Shanghai")}（已换算为你的时区）`
+                        : undefined}
+                      >{startTimeLabel(t.scheduled_time)}</span
+                    >
                   </div>
                 {:else if t.status === "voting"}
                   <div class="flex items-center gap-1.5 text-purple-400 text-xs font-semibold italic">
@@ -444,7 +481,12 @@
                   <div class="grid grid-cols-1 sm:grid-cols-[205px_105px_110px] items-center gap-x-3 gap-y-1 text-xs text-muted-foreground/80">
                     <div class="flex items-center sm:justify-start justify-end gap-1 text-primary font-bold whitespace-nowrap tabular-nums">
                       <ClockIcon class="w-3.5 h-3.5 shrink-0" />
-                      <span>{startTimeLabel(t.scheduled_time) || "时间未记录"}</span>
+                      <span
+                        title={toInstant(t.scheduled_time)
+                          ? `北京时间 ${formatInZone(toInstant(t.scheduled_time), "Asia/Shanghai")}`
+                          : undefined}
+                        >{startTimeLabel(t.scheduled_time) || "时间未记录"}</span
+                      >
                     </div>
                     <div class="flex items-center sm:justify-start justify-end gap-1 bg-muted/40 border border-border/60 px-2 py-0.5 rounded-full font-medium whitespace-nowrap">
                       <UsersIcon class="w-3 h-3 text-muted-foreground/50 shrink-0" />
@@ -495,6 +537,38 @@
     </Dialog.Header>
     <div class="space-y-4 py-3">
       <div class="space-y-1.5">
+        <label class="text-xs font-bold text-muted-foreground block">快捷模板</label>
+        <div class="flex flex-wrap gap-1.5">
+          {#each CREATE_TEMPLATES as template (template.id)}
+            <button
+              type="button"
+              onclick={() => applyCreateTemplate(template)}
+              class="px-2.5 py-1 rounded-md border border-border text-[11px] font-semibold text-muted-foreground hover:text-foreground hover:border-foreground/40 cursor-pointer"
+            >
+              {template.label}
+            </button>
+          {/each}
+        </div>
+        {#if tournaments.length > 0}
+          <select
+            value=""
+            onchange={(event) => {
+              applyTournamentSettings(event.currentTarget.value);
+              event.currentTarget.value = "";
+            }}
+            class="w-full h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground"
+          >
+            <option value="">从已有赛事套用设置…</option>
+            {#each tournaments as t (t.id)}
+              <option value={t.id}>
+                {t.name} (BO{Math.max(1, Number(t.best_of) || 1)} · {t.loser_advances ? "败者晋级" : "胜者晋级"})
+              </option>
+            {/each}
+          </select>
+        {/if}
+      </div>
+
+      <div class="space-y-1.5">
         <label
           for="create-name-input"
           class="text-xs font-bold text-muted-foreground">赛事名称</label
@@ -523,6 +597,27 @@
           max="128"
           class="bg-background border-border text-foreground"
         />
+      </div>
+
+      <div class="space-y-1.5">
+        <label class="text-xs font-bold text-muted-foreground block">赛制 (BO)</label>
+        <div class="flex flex-wrap gap-2 pt-1">
+          {#each [1, 3, 5, 7] as bo}
+            <button
+              type="button"
+              onclick={() => (newBestOf = bo)}
+              class="px-3 py-1.5 rounded-md border text-xs font-bold cursor-pointer transition-colors
+                {newBestOf === bo
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : 'border-border text-muted-foreground hover:text-foreground hover:border-foreground/40'}"
+            >
+              BO{bo}
+            </button>
+          {/each}
+        </div>
+        <p class="text-[10px] text-muted-foreground/60">
+          BO1 仍用“选游戏胜者”；BO3 及以上改为填比分。
+        </p>
       </div>
 
       <div class="space-y-1.5">

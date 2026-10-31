@@ -5,6 +5,7 @@
   import { userState } from "$lib/user.svelte.js";
   import { API } from "$lib/api.js";
   import { isRecentlySeen } from "$lib/players.js";
+  import { timeZoneOverride, setTimeZoneOverride } from "$lib/timezone.svelte.js";
   import { page } from "$app/stores";
   import { ModeWatcher, toggleMode } from "mode-watcher";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
@@ -38,6 +39,19 @@
   let qqError = $state("");
   let verifying = $state(false);
   let pushEnabled = $state(false);
+
+  const TIMEZONE_OPTIONS = [
+    { value: "", label: "跟随系统" },
+    { value: "Asia/Shanghai", label: "北京时间 (UTC+8)" },
+    { value: "Asia/Tokyo", label: "东京 (UTC+9)" },
+    { value: "Asia/Seoul", label: "首尔 (UTC+9)" },
+    { value: "Asia/Singapore", label: "新加坡 (UTC+8)" },
+    { value: "Europe/London", label: "伦敦" },
+    { value: "Europe/Berlin", label: "柏林" },
+    { value: "America/New_York", label: "纽约" },
+    { value: "America/Los_Angeles", label: "洛杉矶" },
+    { value: "Australia/Sydney", label: "悉尼" },
+  ];
   let pushBusy = $state(false);
 
   function urlBase64ToUint8Array(base64String) {
@@ -611,6 +625,29 @@
               class="text-xs h-8 bg-background border-border text-foreground"
             />
           </div>
+        </div>
+
+        <!-- Viewer time zone -->
+        <div class="space-y-1">
+          <label
+            for="layout-timezone-select"
+            class="text-xs font-bold text-muted-foreground"
+            >时区（只影响你看到的比赛时间）</label
+          >
+          <select
+            id="layout-timezone-select"
+            value={timeZoneOverride()}
+            onchange={(event) => setTimeZoneOverride(event.currentTarget.value)}
+            class="w-full h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground"
+          >
+            {#each TIMEZONE_OPTIONS as option (option.value)}
+              <option value={option.value}>
+                {option.label}{option.value === ""
+                  ? ` (${Intl.DateTimeFormat().resolvedOptions().timeZone})`
+                  : ""}
+              </option>
+            {/each}
+          </select>
         </div>
 
         <!-- BattleTags -->

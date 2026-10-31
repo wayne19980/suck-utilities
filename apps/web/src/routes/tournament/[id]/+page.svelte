@@ -17,6 +17,8 @@
   import { accountRegionLabel, accountKey } from "$lib/utils.js";
   import { maxRound, roundLabel, buildMatchOrder } from "$lib/bracket.js";
   import TierBadge from "$lib/components/TierBadge.svelte";
+  import MatchTime from "$lib/components/MatchTime.svelte";
+  import { coalescedRefresh } from "$lib/coalesced-refresh.js";
   import { isRecentlySeen } from "$lib/players.js";
   import * as Card from "$lib/components/ui/card/index.js";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
@@ -314,9 +316,43 @@
   let showMatchDialog = $state(false);
   let selectedMatch = $state(null);
   let loserAdvances = $derived(Boolean(tournament?.loser_advances ?? 1));
+  let bestOf = $derived(Math.max(1, Number(tournament?.best_of) || 1));
+  let bestOfTarget = $derived(Math.floor(bestOf / 2) + 1);
   let resultScore1 = $state(0);
   let resultScore2 = $state(0);
   let submittingResult = $state(false);
+  let seriesScoreValid = $derived.by(() => {
+    const s1 = Number(resultScore1) || 0;
+    const s2 = Number(resultScore2) || 0;
+    return (
+      bestOf > 1 &&
+      s1 >= 0 &&
+      s2 >= 0 &&
+      s1 !== s2 &&
+      Math.max(s1, s2) === bestOfTarget &&
+      Math.min(s1, s2) < bestOfTarget
+    );
+  });
+  let scorePresets = $derived.by(() => {
+    const target = bestOfTarget;
+    const presets = [];
+    for (let lose = 0; lose < target; lose += 1) presets.push([target, lose]);
+    for (let lose = target - 1; lose >= 0; lose -= 1) presets.push([lose, target]);
+    return presets;
+  });
+  let seriesOutcome = $derived.by(() => {
+    const s1 = Number(resultScore1) || 0;
+    const s2 = Number(resultScore2) || 0;
+    if (s1 === s2) return { winner: null, advancer: null };
+    const isPlayer1 = s1 > s2;
+    const winner = isPlayer1 ? selectedMatch?.player1_id : selectedMatch?.player2_id;
+    const advancer = loserAdvances
+      ? isPlayer1
+        ? selectedMatch?.player2_id
+        : selectedMatch?.player1_id
+      : winner;
+    return { winner, advancer };
+  });
 
   // Modal for selecting final time
   let showStatusTimeDialog = $state(false);
@@ -639,19 +675,24 @@
   let eventSource = null;
   $effect(() => {
     if (!tid) return;
-    const es = new EventSource(`/api/tournaments/${tid}/stream`);
+    const id = tid;
+    const refresh = coalescedRefresh(async () => {
+      const updated = await API.getTournament(id);
+      if (id !== tid) return; // route moved to another event meanwhile
+      tournament = updated;
+      initializeSeedOrder();
+    });
+    const es = new EventSource(`/api/tournaments/${id}/stream`);
     eventSource = es;
 
-    es.onmessage = async (event) => {
+    es.onmessage = (event) => {
       try {
-        const msg = JSON.parse(event.data);
-        console.log("实时接收到服务器推送的赛事变动事件:", msg);
-        const updated = await API.getTournament(tid);
-        tournament = updated;
-        initializeSeedOrder();
+        JSON.parse(event.data); // malformed messages are skipped
       } catch (e) {
         console.error("解析实时事件失败", e);
+        return;
       }
+      refresh();
     };
 
     es.onerror = (e) => {
@@ -660,6 +701,7 @@
 
     return () => {
       es.close();
+      refresh.stop();
     };
   });
 
@@ -930,15 +972,21 @@
   }
 
   // Match report modal triggers
-  // Match report modal triggers
+  function prepareResultInputs(match) {
+    resultScore1 = Number(match?.score1) || 0;
+    resultScore2 = Number(match?.score2) || 0;
+  }
+
   function openMatchReport(match) {
     selectedMatch = match;
+    prepareResultInputs(match);
     showMatchDialog = true;
   }
 
   async function openMatchDetails(match) {
     selectedMatch = match;
     if (match.status === "pending" && tournament.status !== "completed") {
+      prepareResultInputs(match);
       showMatchDialog = true;
     } else {
       showMatchDetailsDialog = true;
@@ -1433,6 +1481,60 @@
         : winnerId;
       toast.success(
         `已判定游戏获胜者为 ${playerName(winnerId)}，${loserAdvances ? "败者" : "胜者"} ${playerName(advancerId)} 晋级`,
+      );
+      if (tournament && tournament.active_match_id === selectedMatch.id) {
+        await API.setActiveMatch(tid, null);
+        if (streamMode) await showHybridScene();
+      }
+      showMatchDialog = false;
+      selectedMatch = null;
+      await load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      submittingResult = false;
+    }
+  }
+
+  async function submitSeriesScore() {
+    if (!userState.qqGroup || !userState.id) {
+      toast.error("此操作需要先验证 QQ 群号与选手 ID。已为您打开配置面板！");
+      document.getElementById("header-profile-button")?.click();
+      return;
+    }
+    if (!selectedMatch) return;
+    if (!seriesScoreValid) {
+      toast.error(`BO${bestOf} 需要一方先到 ${bestOfTarget} 分，且不能打平`);
+      return;
+    }
+
+    if (checkHasDependentMatchPlayed(selectedMatch)) {
+      const confirmMsg = "【警告】该场比赛的晋级选手已在后续轮次进行了比赛！\n修改此场比赛将导致后续所有相关比赛的比分与晋级状态都被清空重置。\n\n确定要继续修改并重置后续比赛吗？";
+      if (!confirm(confirmMsg)) return;
+
+      try {
+        await API.rollbackResult(tid, selectedMatch.id);
+      } catch (err) {
+        toast.error("重置后续比赛失败: " + err.message);
+        return;
+      }
+    }
+
+    submittingResult = true;
+    const score1 = Number(resultScore1) || 0;
+    const score2 = Number(resultScore2) || 0;
+    const isPlayer1 = score1 > score2;
+    const winnerId = isPlayer1 ? selectedMatch.player1_id : selectedMatch.player2_id;
+    const advancerId = loserAdvances
+      ? isPlayer1
+        ? selectedMatch.player2_id
+        : selectedMatch.player1_id
+      : winnerId;
+
+    try {
+      await API.submitResult(tid, selectedMatch.id, score1, score2);
+      toast.success(
+        `已记录比分 ${score1}:${score2}，${loserAdvances ? "败者" : "胜者"} ${playerName(advancerId)} 晋级`,
       );
       if (tournament && tournament.active_match_id === selectedMatch.id) {
         await API.setActiveMatch(tid, null);
@@ -3029,24 +3131,26 @@
           • 创建于 {new Date(
             tournament.created_at,
           ).toLocaleDateString("zh-CN")}
+          • BO{bestOf}
           • 晋级规则: <span class="font-bold text-primary">{loserAdvances ? "败者晋级 (SUCK 经典)" : "胜者晋级 (常规单淘)"}</span>
         </p>
         {#if tournament.scheduled_time}
-          <div
-            class="mt-2.5 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl border border-primary/30 bg-primary/5 text-primary text-xs font-bold shadow-md shadow-primary/5"
+          <MatchTime
+            value={tournament.scheduled_time}
+            status={tournament.status}
           >
-            <ClockIcon class="w-4 h-4 text-primary shrink-0 animate-pulse" />
-            <span>比赛时间: {tournament.scheduled_time}</span>
-            <a
-              href={`/api/tournaments/${encodeURIComponent(tournament.id)}/calendar.ics`}
-              download={`${tournament.id}.ics`}
-              class="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border border-primary/25 bg-background/50 text-[10px] font-bold text-primary hover:bg-primary hover:text-primary-foreground transition-colors"
-              title="下载 .ics 日历文件，一键导入日历"
-            >
-              <CalendarIcon class="w-3 h-3" />
-              添加到日历
-            </a>
-          </div>
+            {#snippet actions()}
+              <a
+                href={`/api/tournaments/${encodeURIComponent(tournament.id)}/calendar.ics`}
+                download={`${tournament.id}.ics`}
+                class="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border border-primary/25 bg-background/50 text-[10px] font-bold text-primary hover:bg-primary hover:text-primary-foreground transition-colors"
+                title="下载 .ics 日历文件，一键导入日历"
+              >
+                <CalendarIcon class="w-3 h-3" />
+                添加到日历
+              </a>
+            {/snippet}
+          </MatchTime>
         {/if}
       </div>
 
@@ -4019,51 +4123,170 @@
         填报比赛结果
       </Dialog.Title>
       <Dialog.Description class="text-xs text-muted-foreground">
-        场次对局: {selectedMatch?.position} • {selectedMatch ? roundLabel(selectedMatch.round, totalRounds) : ""}
+        场次对局: {selectedMatch?.position} • {selectedMatch ? roundLabel(selectedMatch.round, totalRounds) : ""} • BO{bestOf}
       </Dialog.Description>
     </Dialog.Header>
 
     {#if selectedMatch}
       <div class="py-3 space-y-5">
-        <!-- Standard Score Submission -->
-        <div
-          class="space-y-3 p-4 rounded-xl border border-border bg-background/30 text-center"
-        >
-          <h4
-            class="text-xs font-bold text-muted-foreground uppercase tracking-widest"
+        {#if bestOf > 1}
+          <!-- Best-of series: enter the map score -->
+          <div
+            class="space-y-3 p-4 rounded-xl border border-border bg-background/30"
           >
-            判定游戏获胜方 ({loserAdvances ? "败者晋级" : "胜者晋级"})
-          </h4>
-          <p class="text-[10px] text-muted-foreground/85 leading-normal">
-            {#if loserAdvances}
-              本比赛为“败者晋级杯赛”，星际2游戏获胜的一方记大分 1
-              分并被淘汰，失败的一方记 0 分并晋级下一轮。请选择本局星际2游戏的<strong
-                >获胜者</strong
-              >：
-            {:else}
-              本比赛为“胜者晋级杯赛”，星际2游戏获胜的一方记大分 1
-              分并晋级下一轮，失败的一方记 0 分并被淘汰。请选择本局星际2游戏的<strong
-                >获胜者</strong
-              >：
-            {/if}
-          </p>
-          <div class="flex flex-col gap-2 mt-1">
+            <h4
+              class="text-xs font-bold text-muted-foreground uppercase tracking-widest text-center"
+            >
+              填报比分 (BO{bestOf} · {loserAdvances ? "败者晋级" : "胜者晋级"})
+            </h4>
+            <div class="grid grid-cols-2 gap-2">
+              <div class="rounded-lg border border-border bg-background/40 p-2 text-center">
+                <p class="truncate text-[11px] font-bold text-foreground" title={playerName(selectedMatch.player1_id)}>
+                  {playerName(selectedMatch.player1_id)}
+                </p>
+                <div class="mt-2 flex items-center justify-center gap-1">
+                  <button
+                    type="button"
+                    disabled={submittingResult}
+                    onclick={() => (resultScore1 = Math.max(0, (Number(resultScore1) || 0) - 1))}
+                    class="flex h-7 w-7 items-center justify-center rounded-full border border-border text-base leading-none text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 cursor-pointer"
+                  >−</button>
+                  <input
+                    type="number"
+                    min="0"
+                    max={bestOfTarget}
+                    bind:value={resultScore1}
+                    disabled={submittingResult}
+                    onblur={() =>
+                      (resultScore1 = Math.min(
+                        bestOfTarget,
+                        Math.max(0, Math.round(Number(resultScore1) || 0)),
+                      ))}
+                    class="h-10 w-14 rounded-md border border-border bg-background text-center font-mono text-2xl font-black text-foreground"
+                  />
+                  <button
+                    type="button"
+                    disabled={submittingResult}
+                    onclick={() => (resultScore1 = Math.min(bestOfTarget, (Number(resultScore1) || 0) + 1))}
+                    class="flex h-7 w-7 items-center justify-center rounded-full border border-border text-base leading-none text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 cursor-pointer"
+                  >+</button>
+                </div>
+              </div>
+              <div class="rounded-lg border border-border bg-background/40 p-2 text-center">
+                <p class="truncate text-[11px] font-bold text-foreground" title={playerName(selectedMatch.player2_id)}>
+                  {playerName(selectedMatch.player2_id)}
+                </p>
+                <div class="mt-2 flex items-center justify-center gap-1">
+                  <button
+                    type="button"
+                    disabled={submittingResult}
+                    onclick={() => (resultScore2 = Math.max(0, (Number(resultScore2) || 0) - 1))}
+                    class="flex h-7 w-7 items-center justify-center rounded-full border border-border text-base leading-none text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 cursor-pointer"
+                  >−</button>
+                  <input
+                    type="number"
+                    min="0"
+                    max={bestOfTarget}
+                    bind:value={resultScore2}
+                    disabled={submittingResult}
+                    onblur={() =>
+                      (resultScore2 = Math.min(
+                        bestOfTarget,
+                        Math.max(0, Math.round(Number(resultScore2) || 0)),
+                      ))}
+                    class="h-10 w-14 rounded-md border border-border bg-background text-center font-mono text-2xl font-black text-foreground"
+                  />
+                  <button
+                    type="button"
+                    disabled={submittingResult}
+                    onclick={() => (resultScore2 = Math.min(bestOfTarget, (Number(resultScore2) || 0) + 1))}
+                    class="flex h-7 w-7 items-center justify-center rounded-full border border-border text-base leading-none text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 cursor-pointer"
+                  >+</button>
+                </div>
+              </div>
+            </div>
+            <div class="flex flex-wrap items-center justify-center gap-1.5">
+              {#each scorePresets as preset (preset.join(":"))}
+                {@const active = Number(resultScore1) === preset[0] && Number(resultScore2) === preset[1]}
+                <button
+                  type="button"
+                  disabled={submittingResult}
+                  onclick={() => {
+                    resultScore1 = preset[0];
+                    resultScore2 = preset[1];
+                  }}
+                  class="rounded-full border px-2.5 py-0.5 font-mono text-xs transition-colors cursor-pointer
+                    {active
+                      ? 'border-primary bg-primary text-primary-foreground'
+                      : 'border-border text-foreground/80 hover:border-foreground/40'}"
+                >
+                  {preset[0]} : {preset[1]}
+                </button>
+              {/each}
+            </div>
+            <p
+              class="rounded-lg px-3 py-2 text-center text-xs
+                {seriesScoreValid ? 'bg-primary/10 text-foreground' : 'bg-muted/60 text-muted-foreground'}"
+            >
+              {#if Number(resultScore1) === Number(resultScore2)}
+                比分相同，无法判定胜者
+              {:else if Math.max(Number(resultScore1) || 0, Number(resultScore2) || 0) !== bestOfTarget}
+                BO{bestOf} 需要一方先到 {bestOfTarget} 分
+              {:else}
+                <span class="font-bold">{playerName(seriesOutcome.winner)}</span> 获胜 ·
+                <span class="font-bold text-primary">{playerName(seriesOutcome.advancer)}</span>
+                {loserAdvances ? "（败者）" : ""}晋级
+              {/if}
+            </p>
             <Button
-              disabled={submittingResult}
-              onclick={() => selectGameWinner(selectedMatch.player1_id)}
+              disabled={submittingResult || !seriesScoreValid}
+              onclick={submitSeriesScore}
               class="w-full text-xs font-bold h-9 cursor-pointer justify-center"
             >
-              游戏获胜者: {playerName(selectedMatch.player1_id)} ({loserAdvances ? "对方晋级" : "晋级下一轮"})
-            </Button>
-            <Button
-              disabled={submittingResult}
-              onclick={() => selectGameWinner(selectedMatch.player2_id)}
-              class="w-full text-xs font-bold h-9 cursor-pointer justify-center"
-            >
-              游戏获胜者: {playerName(selectedMatch.player2_id)} ({loserAdvances ? "对方晋级" : "晋级下一轮"})
+              {submittingResult ? "提交中..." : `提交比分 ${Number(resultScore1) || 0} : ${Number(resultScore2) || 0}`}
             </Button>
           </div>
-        </div>
+        {:else}
+          <!-- BO1: pick the game winner directly -->
+          <div
+            class="space-y-3 p-4 rounded-xl border border-border bg-background/30 text-center"
+          >
+            <h4
+              class="text-xs font-bold text-muted-foreground uppercase tracking-widest"
+            >
+              判定游戏获胜方 ({loserAdvances ? "败者晋级" : "胜者晋级"})
+            </h4>
+            <p class="text-[10px] text-muted-foreground/85 leading-normal">
+              {#if loserAdvances}
+                本比赛为“败者晋级杯赛”，星际2游戏获胜的一方记大分 1
+                分并被淘汰，失败的一方记 0 分并晋级下一轮。请选择本局星际2游戏的<strong
+                  >获胜者</strong
+                >：
+              {:else}
+                本比赛为“胜者晋级杯赛”，星际2游戏获胜的一方记大分 1
+                分并晋级下一轮，失败的一方记 0 分并被淘汰。请选择本局星际2游戏的<strong
+                  >获胜者</strong
+                >：
+              {/if}
+            </p>
+            <div class="flex flex-col gap-2 mt-1">
+              <Button
+                disabled={submittingResult}
+                onclick={() => selectGameWinner(selectedMatch.player1_id)}
+                class="w-full text-xs font-bold h-9 cursor-pointer justify-center"
+              >
+                游戏获胜者: {playerName(selectedMatch.player1_id)} ({loserAdvances ? "对方晋级" : "晋级下一轮"})
+              </Button>
+              <Button
+                disabled={submittingResult}
+                onclick={() => selectGameWinner(selectedMatch.player2_id)}
+                class="w-full text-xs font-bold h-9 cursor-pointer justify-center"
+              >
+                游戏获胜者: {playerName(selectedMatch.player2_id)} ({loserAdvances ? "对方晋级" : "晋级下一轮"})
+              </Button>
+            </div>
+          </div>
+        {/if}
 
         <!-- Walkover / Forfeit -->
         <div
@@ -4153,7 +4376,7 @@
         确定比赛时间
       </Dialog.Title>
       <Dialog.Description class="text-xs text-muted-foreground">
-        请确定比赛最终进行的时间。开启报名后，选手将能看到此时间。
+        请按北京时间（UTC+8）填写。开启报名后，选手会看到自己时区的换算结果。
       </Dialog.Description>
     </Dialog.Header>
 
@@ -4691,6 +4914,7 @@
           variant="outline"
           size="sm"
           onclick={() => {
+            prepareResultInputs(selectedMatch);
             showMatchDetailsDialog = false;
             showMatchDialog = true;
           }}

@@ -172,14 +172,22 @@ export default async function tournamentsRoutes(fastify) {
   });
 
   fastify.post('/tournaments', async (req) => {
-    const { id, name, description, player_capacity, hold_third_place, loser_advances } = req.body;
+    const { id, name, description, player_capacity, hold_third_place, loser_advances, best_of } = req.body;
     if (!id || !name) throw fastify.httpErrors.badRequest('id and name are required');
     const existing = await repo.getById(id);
     if (existing) throw fastify.httpErrors.conflict('Tournament ID already exists');
     if (player_capacity != null && (!Number.isInteger(Number(player_capacity)) || Number(player_capacity) < 2 || Number(player_capacity) > 128)) {
       throw fastify.httpErrors.badRequest('player_capacity must be between 2 and 128');
     }
-    return await repo.create({ id, name, description, player_capacity, hold_third_place, loser_advances });
+    let normalizedBestOf = 1;
+    if (best_of != null) {
+      const n = Number(best_of);
+      if (!Number.isInteger(n) || n < 1 || n > 99 || n % 2 === 0) {
+        throw fastify.httpErrors.badRequest('best_of must be an odd number between 1 and 99');
+      }
+      normalizedBestOf = n;
+    }
+    return await repo.create({ id, name, description, player_capacity, hold_third_place, loser_advances, best_of: normalizedBestOf });
   });
 
   fastify.get('/calendar.ics', async (req, reply) => {
@@ -360,9 +368,17 @@ export default async function tournamentsRoutes(fastify) {
 
   fastify.post('/tournaments/:id/import', async (req) => {
     const { id } = req.params;
-    const { name, description, status, player_capacity, hold_third_place, scheduled_time, created_at, updated_at, players, matches: rawMatches } = req.body;
+    const { name, description, status, player_capacity, hold_third_place, loser_advances, best_of, scheduled_time, created_at, updated_at, players, matches: rawMatches } = req.body;
     if (player_capacity != null && (!Number.isInteger(Number(player_capacity)) || Number(player_capacity) < 2 || Number(player_capacity) > 128)) {
       throw fastify.httpErrors.badRequest('player_capacity must be between 2 and 128');
+    }
+    let importedBestOf = 1;
+    if (best_of != null) {
+      const n = Number(best_of);
+      if (!Number.isInteger(n) || n < 1 || n > 99 || n % 2 === 0) {
+        throw fastify.httpErrors.badRequest('best_of must be an odd number between 1 and 99');
+      }
+      importedBestOf = n;
     }
 
     const client = await fastify.db.connect();
@@ -371,26 +387,30 @@ export default async function tournamentsRoutes(fastify) {
 
       // 1. Upsert tournament
       await client.query(`
-        INSERT INTO axsuck.tournaments (id, name, description, status, player_capacity, hold_third_place, scheduled_time, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        INSERT INTO axsuck.tournaments (id, name, description, status, player_capacity, hold_third_place, loser_advances, best_of, scheduled_time, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT(id) DO UPDATE SET
           name = EXCLUDED.name,
           description = EXCLUDED.description,
           status = EXCLUDED.status,
           player_capacity = EXCLUDED.player_capacity,
           hold_third_place = EXCLUDED.hold_third_place,
+          loser_advances = EXCLUDED.loser_advances,
+          best_of = EXCLUDED.best_of,
           scheduled_time = EXCLUDED.scheduled_time,
           created_at = EXCLUDED.created_at,
           updated_at = EXCLUDED.updated_at
       `, [
-        id, 
-        name, 
-        description || '', 
-        status || 'completed', 
-        player_capacity || 128, 
-        hold_third_place ? 1 : 0, 
-        scheduled_time || '', 
-        created_at || new Date().toISOString(), 
+        id,
+        name,
+        description || '',
+        status || 'completed',
+        player_capacity || 128,
+        hold_third_place ? 1 : 0,
+        loser_advances !== undefined ? (loser_advances ? 1 : 0) : 1,
+        importedBestOf,
+        scheduled_time || '',
+        created_at || new Date().toISOString(),
         updated_at || new Date().toISOString()
       ]);
 

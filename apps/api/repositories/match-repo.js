@@ -34,14 +34,31 @@ export function MatchRepo(db) {
     const match = await getById(id);
     if (!match) throw new Error('Match not found');
 
-    const tourneyRes = await db.query('SELECT loser_advances FROM axsuck.tournaments WHERE id = $1', [match.tournament_id]);
+    const tourneyRes = await db.query('SELECT loser_advances, best_of FROM axsuck.tournaments WHERE id = $1', [match.tournament_id]);
     const tournament = tourneyRes.rows[0];
     const loserAdvances = tournament ? (tournament.loser_advances !== 0) : true;
+    const bestOf = Math.max(1, Number(tournament?.best_of) || 1);
+    const target = Math.floor(bestOf / 2) + 1;
+    const s1 = Number(score1);
+    const s2 = Number(score2);
+
+    if (!Number.isInteger(s1) || !Number.isInteger(s2) || s1 < 0 || s2 < 0) {
+      throw new Error('Scores must be non-negative integers');
+    }
+    if (s1 === s2) {
+      throw new Error('A match cannot end in a tie');
+    }
+    if (Math.max(s1, s2) < target) {
+      throw new Error(`A best-of-${bestOf} match needs ${target} wins`);
+    }
+    if (Math.max(s1, s2) > bestOf) {
+      throw new Error(`Scores cannot exceed best of ${bestOf}`);
+    }
 
     let winnerId = null;
-    if (score1 > score2) {
+    if (s1 > s2) {
       winnerId = loserAdvances ? match.player2_id : match.player1_id;
-    } else if (score2 > score1) {
+    } else if (s2 > s1) {
       winnerId = loserAdvances ? match.player1_id : match.player2_id;
     }
 
@@ -49,7 +66,7 @@ export function MatchRepo(db) {
       UPDATE axsuck.matches SET score1 = $1, score2 = $2, winner_id = $3, status = 'completed'
       WHERE id = $4
       RETURNING *
-    `, [score1, score2, winnerId, id]);
+    `, [s1, s2, winnerId, id]);
 
     return updateRes.rows[0];
   }

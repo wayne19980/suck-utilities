@@ -3,6 +3,7 @@
   import { page } from "$app/state";
   import { API } from "$lib/api.js";
   import { roundLabel, roundShortLabel, buildMatchOrder } from "$lib/bracket.js";
+  import { coalescedRefresh } from "$lib/coalesced-refresh.js";
   import { fade, fly } from "svelte/transition";
 
   // URL Params & Derived States
@@ -377,17 +378,18 @@
     if (!tid) return;
     load();
 
+    const refresh = coalescedRefresh(refreshData, { delay: 150 });
     const es = new EventSource(`/api/tournaments/${tid}/stream`);
     eventSource = es;
 
-    es.onmessage = async (event) => {
+    es.onmessage = (event) => {
       try {
-        const msg = JSON.parse(event.data);
-        console.log("Overlay received update message:", msg);
-        await refreshData();
+        JSON.parse(event.data); // malformed messages are skipped
       } catch (e) {
         console.error("Overlay failed to parse event message", e);
+        return;
       }
+      refresh();
     };
 
     es.onerror = (e) => {
@@ -396,6 +398,7 @@
 
     return () => {
       es.close();
+      refresh.stop();
     };
   });
 

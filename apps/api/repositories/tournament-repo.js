@@ -34,11 +34,19 @@ export function TournamentRepo(db) {
     return res.rows[0] || null;
   }
 
-  async function create({ id, name, description, player_capacity, hold_third_place, loser_advances }) {
+  async function create({ id, name, description, player_capacity, hold_third_place, loser_advances, best_of }) {
     await db.query(`
-      INSERT INTO axsuck.tournaments (id, name, description, status, player_capacity, hold_third_place, loser_advances)
-      VALUES ($1, $2, $3, 'voting', $4, $5, $6)
-    `, [id, name, description || '', player_capacity || 128, hold_third_place ? 1 : 0, loser_advances !== undefined ? (loser_advances ? 1 : 0) : 1]);
+      INSERT INTO axsuck.tournaments (id, name, description, status, player_capacity, hold_third_place, loser_advances, best_of)
+      VALUES ($1, $2, $3, 'voting', $4, $5, $6, $7)
+    `, [
+      id,
+      name,
+      description || '',
+      player_capacity || 128,
+      hold_third_place ? 1 : 0,
+      loser_advances !== undefined ? (loser_advances ? 1 : 0) : 1,
+      best_of || 1,
+    ]);
     return getById(id);
   }
 
