@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { page } from "$app/state";
   import { API } from "$lib/api.js";
+  import { coalescedRefresh } from "$lib/coalesced-refresh.js";
   import { roundLabel, roundShortLabel, buildMatchOrder, recommendPendingMatches } from "$lib/bracket.js";
   import { fade, fly } from "svelte/transition";
 
@@ -378,11 +379,14 @@
     const es = new EventSource(`/api/tournaments/${tid}/stream`);
     eventSource = es;
 
-    es.onmessage = async (event) => {
+    // A burst of SSE messages (several results at once) collapses into one
+    // reload, so the stage does not refetch the event for every message.
+    const refresh = coalescedRefresh(refreshData, { delay: 150 });
+    es.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
         console.log("Overlay received update message:", msg);
-        await refreshData();
+        refresh();
       } catch (e) {
         console.error("Overlay failed to parse event message", e);
       }
@@ -394,6 +398,7 @@
 
     return () => {
       es.close();
+      refresh.stop();
     };
   });
 

@@ -5,11 +5,10 @@ import { exec } from 'child_process';
 import util from 'util';
 import zlib from 'zlib';
 import os from 'os';
-import { MatchRepo } from '../repositories/match-repo.js';
 import { getPlayerDisplayName } from '../repositories/player-repo.js';
 import { TournamentAccountRepo } from '../repositories/tournament-account-repo.js';
 import { liquipediaBracketId, liquipediaBracketTemplate } from '../lib/bracket.js';
-import { latestReplayEnd } from '../lib/replay-time.js';
+import { computeReplaySeriesStats, summarizeSeries } from '../lib/replay-score.js';
 import { ALLOWED_QQ_GROUPS } from '../lib/qq-groups.js';
 import {
   normalizeBnetUrl,
@@ -21,8 +20,7 @@ import {
   bnetEntryKey,
   parseBnetIdsField,
   flattenReplayPlayers,
-  describeReplayAccount,
-  getPlayerInfoFromReplay
+  describeReplayAccount
 } from '../lib/replay-identity.js';
 
 // Keep the historical module surface: callers import these from the route file.
@@ -314,7 +312,6 @@ export default async function replaysRoutes(fastify) {
       throw fastify.httpErrors.notFound('Tournament not found.');
     }
     const bestOf = Math.max(1, Number(tournament.best_of) || 1);
-    const bestOfTarget = Math.floor(bestOf / 2) + 1;
 
     const envCheck = await checkPythonEnvironment();
     if (!envCheck.ok) {
@@ -477,53 +474,35 @@ export default async function replaysRoutes(fastify) {
           parsedData.game_length
         ]);
 
-        // Auto-update match score and result
+        // Read-only: importing a replay never changes the match result.
+        // Results are submitted by a human (the dialog can pre-fill from these
+        // numbers), so best-of validation and advancement stay in one place.
         const allReplaysRes = await db.query(`
-          SELECT id, parsed_data, winner, game_length FROM axsuck.match_replays WHERE match_id = $1
+          SELECT parsed_data FROM axsuck.match_replays WHERE match_id = $1
         `, [match.id]);
-        const allReplays = allReplaysRes.rows;
-
-        const matchRepo = MatchRepo(db);
-        let score1 = 0;
-        let score2 = 0;
-
-        const p1Row = (await db.query('SELECT * FROM axsuck.players WHERE id = $1', [match.player1_id])).rows[0];
-        const p2Row = (await db.query('SELECT * FROM axsuck.players WHERE id = $1', [match.player2_id])).rows[0];
-
-        // Attribute each game to the registered player whose account actually
-        // appears in the replay (URL-aware), so identical display names are safe.
-        allReplays.forEach(r => {
-          const parsed = typeof r.parsed_data === 'string' ? JSON.parse(r.parsed_data) : r.parsed_data;
-
-          const repP1Match = p1Row ? getPlayerInfoFromReplay(p1Row.id, getPlayerDisplayName(p1Row), p1Row.battle_tags, p1Row.bnet_ids, parsed, accountsByPlayer[p1Row.id] || []) : null;
-          const repP2Match = p2Row ? getPlayerInfoFromReplay(p2Row.id, getPlayerDisplayName(p2Row), p2Row.battle_tags, p2Row.bnet_ids, parsed, accountsByPlayer[p2Row.id] || []) : null;
-
-          const p1Won = repP1Match?.result === 'Win';
-          const p2Won = repP2Match?.result === 'Win';
-
-          if (p1Won && !p2Won) score1++;
-          else if (p2Won && !p1Won) score2++;
+        const p1Row = (await db.query('SELECT * FROM axsuck.players WHERE id = $1', [match.player1_id])).rows[0] || null;
+        const p2Row = (await db.query('SELECT * FROM axsuck.players WHERE id = $1', [match.player2_id])).rows[0] || null;
+        const summary = summarizeSeries({
+          ...computeReplaySeriesStats({
+            replays: allReplaysRes.rows,
+            player1: p1Row,
+            player2: p2Row,
+            accountsByPlayer
+          }),
+          bestOf
         });
 
-// Only complete the match once the series has a winner. A partly
-        // imported best-of series (e.g. 1-0 in a BO3) stays pending.
-        const seriesTop = Math.max(score1, score2);
-        if (score1 !== score2 && seriesTop >= bestOfTarget && seriesTop <= bestOf) {
-          // Let the repo apply the event's advancement rule (winner advances
-          // or the SUCK-classic loser advances) instead of assuming one.
-          await matchRepo.submitResult(match.id, score1, score2);
-
-          // Keep completed_at derived from the last replay's end time rather
-          // than the submission time used by manual results.
-          const replayEnd = latestReplayEnd(allReplays);
-          await db.query(`
-            UPDATE axsuck.matches SET completed_at = CASE WHEN $2::double precision IS NULL THEN NULL ELSE to_timestamp($2) END
-            WHERE id = $1
-          `, [match.id, replayEnd]);
-          await matchRepo.advanceWinner(tournamentId, match.id);
-        }
-
-        results.push({ filename, status: 'success', matchId: match.id, p1: p1.display_name || p1.id, p2: p2.display_name || p2.id });
+        results.push({
+          filename,
+          status: 'success',
+          matchId: match.id,
+          p1: p1.display_name || p1.id,
+          p2: p2.display_name || p2.id,
+          score1: summary.score1,
+          score2: summary.score2,
+          games: summary.games,
+          complete: summary.complete
+        });
       } catch (err) {
         results.push({ filename, status: 'error', error: err.message });
       } finally {
@@ -555,6 +534,55 @@ export default async function replaysRoutes(fastify) {
       ...r,
       parsed_data: typeof r.parsed_data === 'string' ? JSON.parse(r.parsed_data) : r.parsed_data
     }));
+  });
+
+  // Read-only replay score for the result dialog: importing replays never
+  // completes a match, so the dialog asks for these numbers and pre-fills the
+  // form; the human still submits, and best-of validation applies as usual.
+  fastify.get('/matches/:matchId/replay-score', async (req) => {
+    const { matchId } = req.params;
+    const matchRes = await db.query('SELECT * FROM axsuck.matches WHERE id = $1', [matchId]);
+    const match = matchRes.rows[0];
+    if (!match) {
+      throw fastify.httpErrors.notFound('Match not found.');
+    }
+
+    const tourneyRes = await db.query('SELECT best_of, loser_advances FROM axsuck.tournaments WHERE id = $1', [match.tournament_id]);
+    const tournament = tourneyRes.rows[0] || {};
+    const bestOf = Math.max(1, Number(tournament.best_of) || 1);
+
+    const replaysRes = await db.query(`
+      SELECT parsed_data FROM axsuck.match_replays
+      WHERE match_id = $1
+      ORDER BY uploaded_at ASC
+    `, [match.id]);
+    const p1Row = (await db.query('SELECT * FROM axsuck.players WHERE id = $1', [match.player1_id])).rows[0] || null;
+    const p2Row = (await db.query('SELECT * FROM axsuck.players WHERE id = $1', [match.player2_id])).rows[0] || null;
+
+    const accountRepo = TournamentAccountRepo(db);
+    const tournamentAccounts = await accountRepo.listByTournament(match.tournament_id);
+    const accountsByPlayer = {};
+    for (const a of tournamentAccounts) {
+      (accountsByPlayer[a.player_id] = accountsByPlayer[a.player_id] || []).push(a);
+    }
+
+    const summary = summarizeSeries({
+      ...computeReplaySeriesStats({
+        replays: replaysRes.rows,
+        player1: p1Row,
+        player2: p2Row,
+        accountsByPlayer
+      }),
+      bestOf
+    });
+
+    return {
+      ...summary,
+      match_id: match.id,
+      status: match.status,
+      winner_id: match.winner_id,
+      loser_advances: Boolean(tournament.loser_advances)
+    };
   });
 
   // Download raw decompressed replay

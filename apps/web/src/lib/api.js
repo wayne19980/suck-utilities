@@ -132,6 +132,7 @@ export const API = {
   uploadBatchReplays: (tournamentId, replays, qqGroup) =>
     request(`/tournaments/${enc(tournamentId)}/replays/batch`, { method: 'POST', body: JSON.stringify({ replays, qqGroup }) }),
   getReplays: (matchId) => request(`/matches/${matchId}/replays`),
+  getMatchReplayScore: (matchId) => request(`/matches/${matchId}/replay-score`),
   deleteReplay: (replayId) => request(`/replays/${replayId}`, { method: 'DELETE' }),
 
   // Tournament-scoped account links (temporary / borrowed accounts)

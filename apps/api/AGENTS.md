@@ -23,6 +23,7 @@ Follow the root `AGENTS.md` first. State lives at the repo root: read `feature_l
 - Add `do` and `undo` migrations together for every schema change.
 - Use `fastify.httpErrors` (from `@fastify/sensible`) for HTTP errors.
 - Client identity comes from the `x-player-id` and `x-qq-group` request headers, not JWT.
+- 录像导入是只读的：`routes/replays.js` 只写 `axsuck.match_replays` 并回传比分摘要，绝不调用 `MatchRepo.submitResult`/`advanceWinner`；比分由人工提交（弹窗可用 `GET /matches/:matchId/replay-score` 预填）。
 - Do not add suck endpoints to `apps/api-fastify`; the integration is cancelled.
 - This app is a root pnpm workspace package. Do not add a local `pnpm-lock.yaml` or `pnpm-workspace.yaml`; run installs from the repository root.
 

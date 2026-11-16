@@ -30,6 +30,7 @@ Follow the root `AGENTS.md` first. State lives at the repo root: read `feature_l
 - The OBS stage itself is `src/lib/components/TournamentOverlay.svelte` (a `tid` prop); both overlay routes are thin wrappers. Broadcast state lives in `$lib/broadcast.js` + `axsuck.broadcasts`, not in localStorage.
 - Shared utilities live in `src/lib` (`api.js`, `utils.js`, `datetime.js`, `timezone.svelte.js`, `coalesced-refresh.js`).
 - Tournament times are stored as Beijing time (`scheduled_time`); render them with `MatchTime.svelte` / `datetime.js` (`toInstant` + `formatInZone`), never with raw `toLocaleString`. BO is `tournament.best_of` (BO1 uses the “pick game winner” flow, BO3+ uses score entry).
+- 录像导入只读：导入录像不改变比分/晋级；结果弹窗的「从录像读取比分」只预填，提交仍走 `submitResult` 的 BO 校验。
 - App state uses a class with `$state`, e.g. `src/lib/user.svelte.js`.
 - UI primitives live in `src/lib/components/ui`.
 - The dev server runs on port 5175 and proxies `/api` to `http://127.0.0.1:3100`.

@@ -348,6 +348,8 @@ import RaceIcon from "$lib/components/RaceIcon.svelte";
   let bestOfTarget = $derived(Math.floor(bestOf / 2) + 1);
   let resultScore1 = $state(0);
   let resultScore2 = $state(0);
+  let replayScore = $state(null);
+  let replayScoreLoading = $state(false);
   let submittingResult = $state(false);
   let seriesScoreValid = $derived.by(() => {
     const s1 = Number(resultScore1) || 0;
@@ -1079,6 +1081,7 @@ import RaceIcon from "$lib/components/RaceIcon.svelte";
   function prepareResultInputs(match) {
     resultScore1 = Number(match?.score1) || 0;
     resultScore2 = Number(match?.score2) || 0;
+    replayScore = null;
   }
 
   function openMatchReport(match) {
@@ -1233,7 +1236,7 @@ import RaceIcon from "$lib/components/RaceIcon.svelte";
       toast.dismiss("batch-upload");
 
       if (successCount > 0) {
-        toast.success(`成功自动匹配并导入了 ${successCount} 个对局！`);
+        toast.success(`成功导入了 ${successCount} 个录像（不会自动修改比分；需要时在比赛详情里点「从录像读取比分」）`);
       }
       if (skippedCount > 0) {
         toast.info(`${skippedCount} 个已存在对局，已自动跳过。`);
@@ -1651,6 +1654,45 @@ import RaceIcon from "$lib/components/RaceIcon.svelte";
       toast.error(e.message);
     } finally {
       submittingResult = false;
+    }
+  }
+
+  // Importing replays never changes a result; this only reads the score the
+  // replays imply and pre-fills the form. The normal submit path still applies
+  // best-of validation and advancement.
+  async function loadReplayScore() {
+    if (!selectedMatch || replayScoreLoading) return;
+    replayScoreLoading = true;
+    try {
+      const data = await API.getMatchReplayScore(selectedMatch.id);
+      replayScore = data;
+      if (!data.games) {
+        toast.info("该场比赛还没有上传录像");
+        return;
+      }
+      if (bestOf > 1) {
+        resultScore1 = data.score1;
+        resultScore2 = data.score2;
+        if (data.complete) {
+          toast.success(
+            `已按 ${data.games} 场录像填入 ${data.score1}:${data.score2}，确认后提交`,
+          );
+        } else {
+          toast.info(
+            `录像比分 ${data.score1}:${data.score2}，BO${bestOf} 需一方先到 ${data.target} 分，系列赛尚未分出胜负`,
+          );
+        }
+      } else {
+        const gameWinner =
+          data.score1 > data.score2 ? selectedMatch.player1_id : selectedMatch.player2_id;
+        toast.info(
+          `录像显示 ${playerName(gameWinner)} 获胜（${data.games} 场），请点击对应按钮确认`,
+        );
+      }
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      replayScoreLoading = false;
     }
   }
 
@@ -4596,6 +4638,18 @@ import RaceIcon from "$lib/components/RaceIcon.svelte";
               {/if}
             </p>
             <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={replayScoreLoading || submittingResult}
+              onclick={loadReplayScore}
+              class="w-full text-[11px] font-semibold h-8 cursor-pointer justify-center"
+            >
+              {replayScoreLoading
+                ? "读取录像中..."
+                : `从录像读取比分${replayScore ? `（${replayScore.games} 场）` : ""}`}
+            </Button>
+            <Button
               disabled={submittingResult || !seriesScoreValid}
               onclick={submitSeriesScore}
               class="w-full text-xs font-bold h-9 cursor-pointer justify-center"
@@ -4626,6 +4680,30 @@ import RaceIcon from "$lib/components/RaceIcon.svelte";
                 >：
               {/if}
             </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={replayScoreLoading || submittingResult}
+              onclick={loadReplayScore}
+              class="w-full text-[11px] font-semibold h-8 cursor-pointer justify-center"
+            >
+              {replayScoreLoading
+                ? "读取录像中..."
+                : `从录像读取比分${replayScore ? `（${replayScore.games} 场）` : ""}`}
+            </Button>
+            {#if replayScore?.games > 0}
+              <p class="text-[11px] text-muted-foreground leading-normal">
+                录像显示
+                <span class="font-bold text-foreground"
+                  >{playerName(
+                    replayScore.score1 > replayScore.score2
+                      ? selectedMatch.player1_id
+                      : selectedMatch.player2_id,
+                  )}</span
+                > 获胜（{replayScore.games} 场），请点击下方对应按钮确认。
+              </p>
+            {/if}
             <div class="flex flex-col gap-2 mt-1">
               <Button
                 disabled={submittingResult}
