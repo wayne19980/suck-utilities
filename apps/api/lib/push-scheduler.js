@@ -4,7 +4,7 @@ import { reminderPayload, reminderWindow, REMINDER_KIND } from './push.js';
 export function startPushScheduler(fastify) {
   const publicKey = process.env.VAPID_PUBLIC_KEY;
   const privateKey = process.env.VAPID_PRIVATE_KEY;
-  const subject = process.env.VAPID_SUBJECT || 'mailto:REMOVED_EMAIL';
+  const subject = process.env.VAPID_SUBJECT || 'mailto:937745389@qq.com';
   if (!publicKey || !privateKey) {
     fastify.log.warn('VAPID keys are not configured; web push is disabled.');
     return;

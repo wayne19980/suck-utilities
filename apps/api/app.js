@@ -16,8 +16,10 @@ import playersRoutes from './routes/players.js';
 import matchesRoutes from './routes/matches.js';
 import votesRoutes from './routes/votes.js';
 import ladderRoutes from './routes/ladder.js';
+import ratingLabRoutes from './routes/rating-lab.js';
 import replaysRoutes, { checkPythonEnvironment } from './routes/replays.js';
 import pushRoutes from './routes/push.js';
+import broadcastsRoutes from './routes/broadcasts.js';
 import { startPushScheduler } from './lib/push-scheduler.js';
 import fastifySse from '@fastify/sse';
 
@@ -42,8 +44,10 @@ await fastify.register(playersRoutes, { prefix: '/api' });
 await fastify.register(matchesRoutes, { prefix: '/api' });
 await fastify.register(votesRoutes, { prefix: '/api' });
 await fastify.register(ladderRoutes, { prefix: '/api' });
+await fastify.register(ratingLabRoutes, { prefix: '/api' });
 await fastify.register(replaysRoutes, { prefix: '/api' });
 await fastify.register(pushRoutes, { prefix: '/api' });
+await fastify.register(broadcastsRoutes, { prefix: '/api' });
 startPushScheduler(fastify);
 
 // Runtime Python check on startup

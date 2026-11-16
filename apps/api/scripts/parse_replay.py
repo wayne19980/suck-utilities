@@ -11,6 +11,61 @@ if hasattr(sys.stdout, 'reconfigure'):
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
+
+def patch_observer_owned_units():
+    """
+    sc2reader 1.9.0's context plugin assumes every unit upkeeper has `.units`.
+    Observer slots don't, but some lobbies (e.g. players leaving / archon-like
+    setups) keep observer-owned units in tracker events. Add an empty `units`
+    list so the full event load does not crash, and make spawningtool ignore
+    tracker events for entities that are not actual players.
+    """
+    try:
+        from sc2reader.objects import Observer
+        if not hasattr(Observer, "units"):
+            Observer.units = []
+    except Exception:
+        pass
+
+    parser_cls = spawningtool.parser.GameParser
+    if getattr(parser_cls, "_observer_safe_tracker", False):
+        return
+
+    original_change = parser_cls.add_change_event
+    original_died = parser_cls.add_died_event
+    original_upgrade = parser_cls.add_upgrade_event
+
+    def is_active_player(self, pid):
+        try:
+            return pid in self.parsed_data["players"]
+        except Exception:
+            return False
+
+    def add_change_event(self, event):
+        owner = getattr(getattr(event, "unit", None), "owner", None)
+        if owner is not None and not is_active_player(self, getattr(owner, "pid", None)):
+            return
+        return original_change(self, event)
+
+    def add_died_event(self, event):
+        owner = getattr(getattr(event, "unit", None), "owner", None)
+        if owner is not None and not is_active_player(self, getattr(owner, "pid", None)):
+            return
+        return original_died(self, event)
+
+    def add_upgrade_event(self, event):
+        if not is_active_player(self, getattr(event, "pid", None)):
+            return
+        return original_upgrade(self, event)
+
+    parser_cls.add_change_event = add_change_event
+    parser_cls.add_died_event = add_died_event
+    parser_cls.add_upgrade_event = add_upgrade_event
+    parser_cls._observer_safe_tracker = True
+
+
+patch_observer_owned_units()
+
 # Set worker names for tracing
 WORKER_NAMES = {"SCV", "Probe", "Drone"}
 

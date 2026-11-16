@@ -14,12 +14,54 @@
   import PlusIcon from "@lucide/svelte/icons/plus";
   import DownloadIcon from "@lucide/svelte/icons/download";
   import ArrowRightIcon from "@lucide/svelte/icons/arrow-right";
+  import ChevronDownIcon from "@lucide/svelte/icons/chevron-down";
   import TrophyIcon from "@lucide/svelte/icons/trophy";
+import BracketBoard from "$lib/components/BracketBoard.svelte";
   import { formatInZone, toInstant } from "$lib/datetime.js";
   import { timeZoneOverride } from "$lib/timezone.svelte.js";
 
   let tournaments = $state([]);
   let loading = $state(true);
+
+  // Inline bracket preview, loaded on demand and cached per tournament.
+  const bracketCache = new Map();
+  let expandedTournamentId = $state(null);
+  let expandedTournament = $state(null);
+  let bracketLoading = $state(false);
+  let bracketError = $state("");
+
+  function navigateToTournament(t) {
+    goto(`/tournament/${encodeURIComponent(t.id)}`);
+  }
+
+  async function toggleBracket(t) {
+    if (expandedTournamentId === t.id) {
+      expandedTournamentId = null;
+      expandedTournament = null;
+      bracketError = "";
+      return;
+    }
+
+    expandedTournamentId = t.id;
+    bracketError = "";
+    if (bracketCache.has(t.id)) {
+      expandedTournament = bracketCache.get(t.id);
+      bracketLoading = false;
+      return;
+    }
+
+    expandedTournament = null;
+    bracketLoading = true;
+    try {
+      const data = await API.getTournament(t.id);
+      bracketCache.set(t.id, data);
+      if (expandedTournamentId === t.id) expandedTournament = data;
+    } catch (e) {
+      if (expandedTournamentId === t.id) bracketError = e.message;
+    } finally {
+      if (expandedTournamentId === t.id) bracketLoading = false;
+    }
+  }
 
   // Relative day helper (past and future).
   function relativeDay(value) {
@@ -98,7 +140,7 @@
   function actionLabel(t) {
     if (t.status === "voting") return "去投票";
     if (t.status === "registration") return "去报名";
-    if (t.status === "in_progress") return "看对阵";
+    if (t.status === "in_progress") return "进入赛事";
     return "查看";
   }
 
@@ -177,6 +219,10 @@
 
   async function load() {
     loading = true;
+    bracketCache.clear();
+    expandedTournamentId = null;
+    expandedTournament = null;
+    bracketError = "";
     try {
       tournaments = await API.listTournaments();
     } catch (e) {
@@ -325,7 +371,7 @@
             可以直接发起下一届的时间投票，或创建一场新的 StarCraft 锦标赛。
           </p>
           {#if historyTournaments.length > 0}
-            <div class="mt-2 inline-flex items-center gap-1.5 text-[10px] text-muted-foreground/70">
+            <div class="mt-2 inline-flex items-center gap-1.5 text-[11px] text-muted-foreground/70">
               <ClockIcon class="w-3 h-3 shrink-0" />
               <span>上次比赛：{relativeDay(getTournamentDate(historyTournaments[0]))}</span>
             </div>
@@ -345,9 +391,16 @@
           <div
             role="button"
             tabindex="0"
-            onclick={() => goto(`/tournament/${encodeURIComponent(t.id)}`)}
-            onkeydown={(e) => e.key === 'Enter' && goto(`/tournament/${encodeURIComponent(t.id)}`)}
-            class="group flex flex-col md:flex-row md:items-center justify-between p-4.5 hover:bg-muted/40 transition-colors cursor-pointer gap-4"
+            onclick={() => navigateToTournament(t)}
+            onkeydown={(e) => {
+              if (e.target !== e.currentTarget) return;
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                navigateToTournament(t);
+              }
+            }}
+            class="group flex flex-col md:flex-row md:items-center justify-between p-4.5 transition-colors cursor-pointer gap-4
+              {expandedTournamentId === t.id ? 'bg-muted/20' : 'hover:bg-muted/40'}"
           >
             <!-- Left: Avatar + Title -->
             <div class="flex items-center gap-4 min-w-0 flex-1">
@@ -359,10 +412,10 @@
                   <h3 class="font-bold text-base text-foreground group-hover:text-primary transition-colors truncate max-w-[280px] sm:max-w-[400px]">
                     {t.name}
                   </h3>
-                  <Badge variant="outline" class="text-[9px] px-2 py-0 font-bold uppercase tracking-wider {getStatusStyle(t.status)} shrink-0">
+                  <Badge variant="outline" class="text-[11px] px-2 py-0 font-bold uppercase tracking-wider {getStatusStyle(t.status)} shrink-0">
                     {getStatusLabel(t.status)}
                   </Badge>
-                  <span class="text-[10px] text-muted-foreground font-mono bg-muted/60 px-1.5 py-0.25 rounded shrink-0">ID: {t.id}</span>
+                  <span class="text-[11px] text-muted-foreground font-mono bg-muted/60 px-1.5 py-0.25 rounded shrink-0">ID: {t.id}</span>
                 </div>
                 <p class="text-xs text-muted-foreground mt-1 flex items-center gap-1.5 flex-wrap">
                   <span>StarCraft II 单败淘汰赛</span>
@@ -397,7 +450,7 @@
                     <span>比赛时间待定...</span>
                   </div>
                 {/if}
-                <div class="text-[10px] text-muted-foreground/50 mt-1 font-mono">
+                <div class="text-[11px] text-muted-foreground/50 mt-1 font-mono">
                   {#if t.scheduled_time}
                     <span class="text-primary/80 font-bold">{countdownLabel(t)}</span>
                     <span class="mx-1">·</span>
@@ -425,15 +478,61 @@
                 </div>
               </div>
 
-              <!-- Action -->
-              <div class="flex items-center gap-1.5 text-[10px] font-bold text-muted-foreground/70 group-hover:text-primary transition-colors">
+              <!-- Action: small bracket toggle + full tournament navigation -->
+              <button
+                type="button"
+                aria-expanded={expandedTournamentId === t.id}
+                onclick={(e) => {
+                  e.stopPropagation();
+                  toggleBracket(t);
+                }}
+                class="flex h-7 items-center gap-1 rounded-md border border-border/70 bg-background/50 px-2 text-[11px] font-bold text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors cursor-pointer"
+              >
+                <span>{expandedTournamentId === t.id ? "收起" : "对阵"}</span>
+                <ChevronDownIcon class="w-3.5 h-3.5 transition-transform duration-200 {expandedTournamentId === t.id ? 'rotate-180' : ''}" />
+              </button>
+              <button
+                type="button"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  navigateToTournament(t);
+                }}
+                class="flex items-center gap-1.5 text-[11px] font-bold text-muted-foreground/70 group-hover:text-primary transition-colors cursor-pointer"
+              >
                 <span>{actionLabel(t)}</span>
                 <div class="flex items-center justify-center w-8 h-8 rounded-full bg-muted/40 group-hover:bg-primary group-hover:text-primary-foreground transition-all duration-300">
                   <ArrowRightIcon class="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
                 </div>
-              </div>
+              </button>
             </div>
           </div>
+          {#if expandedTournamentId === t.id}
+            <div class="border-t border-border/40 bg-muted/10 px-4 py-3">
+              {#if bracketLoading}
+                <div class="flex items-center justify-center gap-2 py-6 text-[11px] text-muted-foreground">
+                  <div class="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
+                  正在加载对阵...
+                </div>
+              {:else if bracketError}
+                <p class="py-4 text-center text-[11px] text-rose-500">加载对阵失败：{bracketError}</p>
+              {:else if expandedTournament}
+                <BracketBoard tournament={expandedTournament} />
+                <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                  <span>
+                    {expandedTournament.players?.length || 0} 人参赛 ·
+                    {expandedTournament.matches?.length || 0} 场对阵
+                  </span>
+                  <button
+                    type="button"
+                    onclick={() => navigateToTournament(t)}
+                    class="font-bold text-primary hover:underline cursor-pointer"
+                  >
+                    进入赛事查看完整对阵 →
+                  </button>
+                </div>
+              {/if}
+            </div>
+          {/if}
         {/each}
       </div>
     {/if}
@@ -450,9 +549,16 @@
             <div
               role="button"
               tabindex="0"
-              onclick={() => goto(`/tournament/${encodeURIComponent(t.id)}`)}
-              onkeydown={(e) => e.key === 'Enter' && goto(`/tournament/${encodeURIComponent(t.id)}`)}
-              class="group flex flex-col sm:flex-row sm:items-center justify-between p-4 hover:bg-muted/40 transition-colors cursor-pointer gap-3"
+              onclick={() => navigateToTournament(t)}
+              onkeydown={(e) => {
+                if (e.target !== e.currentTarget) return;
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  navigateToTournament(t);
+                }
+              }}
+              class="group flex flex-col sm:flex-row sm:items-center justify-between p-4 transition-colors cursor-pointer gap-3
+                {expandedTournamentId === t.id ? 'bg-muted/20' : 'hover:bg-muted/40'}"
             >
               <!-- Left: Avatar + Title info -->
               <div class="flex items-center gap-3.5 min-w-0 flex-1">
@@ -464,8 +570,8 @@
                     <h3 class="font-bold text-sm text-foreground group-hover:text-primary transition-colors truncate max-w-[240px] sm:max-w-[360px]">
                       {t.name}
                     </h3>
-                    <Badge variant="outline" class="text-[9px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/20 shrink-0">已完结</Badge>
-                    <span class="text-[10px] text-muted-foreground font-mono bg-muted/60 px-1.5 py-0.25 rounded shrink-0">ID: {t.id}</span>
+                    <Badge variant="outline" class="text-[11px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/20 shrink-0">已完结</Badge>
+                    <span class="text-[11px] text-muted-foreground font-mono bg-muted/60 px-1.5 py-0.25 rounded shrink-0">ID: {t.id}</span>
                   </div>
                   <p class="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-1.5 flex-wrap">
                     <span>StarCraft II 单败淘汰赛</span>
@@ -497,7 +603,7 @@
                       <span>{relativeDay(getTournamentDate(t))}完赛</span>
                     </div>
                   </div>
-                  <div class="text-[10px] text-muted-foreground/50 mt-1 font-mono">
+                  <div class="text-[11px] text-muted-foreground/50 mt-1 font-mono">
                     创建于 {new Date(t.created_at).toLocaleDateString("zh-CN")}
                   </div>
                 </div>
@@ -511,12 +617,61 @@
                     class="text-xs gap-1 px-2.5 h-7.5 hover:bg-secondary cursor-pointer border-border hover:text-foreground">
                     <DownloadIcon class="w-3 h-3" /> 导出
                   </Button>
-                  <div class="hidden sm:flex items-center justify-center w-7.5 h-7.5 rounded-full bg-muted/30 group-hover:bg-muted group-hover:text-foreground transition-all duration-300">
-                    <ArrowRightIcon class="w-3.5 h-3.5" />
-                  </div>
+                  <button
+                    type="button"
+                    aria-expanded={expandedTournamentId === t.id}
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      toggleBracket(t);
+                    }}
+                    class="flex h-7.5 items-center gap-1 rounded-md border border-border/70 bg-background/50 px-2 text-[11px] font-bold text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors cursor-pointer"
+                  >
+                    <span>{expandedTournamentId === t.id ? "收起" : "对阵"}</span>
+                    <ChevronDownIcon class="w-3.5 h-3.5 transition-transform duration-200 {expandedTournamentId === t.id ? 'rotate-180' : ''}" />
+                  </button>
+                  <button
+                    type="button"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      navigateToTournament(t);
+                    }}
+                    class="flex items-center gap-1.5 text-[11px] font-bold text-muted-foreground/70 hover:text-primary transition-colors cursor-pointer"
+                  >
+                    <span class="hidden sm:inline">进入赛事</span>
+                    <div class="flex items-center justify-center w-7.5 h-7.5 rounded-full bg-muted/30 group-hover:bg-muted group-hover:text-foreground transition-all duration-300">
+                      <ArrowRightIcon class="w-3.5 h-3.5" />
+                    </div>
+                  </button>
                 </div>
               </div>
             </div>
+            {#if expandedTournamentId === t.id}
+              <div class="border-t border-border/40 bg-muted/10 px-4 py-3">
+                {#if bracketLoading}
+                  <div class="flex items-center justify-center gap-2 py-6 text-[11px] text-muted-foreground">
+                    <div class="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
+                    正在加载对阵...
+                  </div>
+                {:else if bracketError}
+                  <p class="py-4 text-center text-[11px] text-rose-500">加载对阵失败：{bracketError}</p>
+                {:else if expandedTournament}
+                  <BracketBoard tournament={expandedTournament} />
+                  <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                    <span>
+                      {expandedTournament.players?.length || 0} 人参赛 ·
+                      {expandedTournament.matches?.length || 0} 场对阵
+                    </span>
+                    <button
+                      type="button"
+                      onclick={() => navigateToTournament(t)}
+                      class="font-bold text-primary hover:underline cursor-pointer"
+                    >
+                      进入赛事查看完整对阵 →
+                    </button>
+                  </div>
+                {/if}
+              </div>
+            {/if}
           {/each}
         </div>
       </div>
@@ -579,7 +734,7 @@
           placeholder="如: StarCraft Ultra Chicken King #50"
           class="bg-background border-border text-foreground"
         />
-        <p class="text-[10px] text-muted-foreground/60">
+        <p class="text-[11px] text-muted-foreground/60">
           系统会根据赛事名称自动生成简洁的赛事 ID (例如输入 SUCK#41 将自动转换为 suck41)。
         </p>
       </div>
@@ -615,7 +770,7 @@
             </button>
           {/each}
         </div>
-        <p class="text-[10px] text-muted-foreground/60">
+        <p class="text-[11px] text-muted-foreground/60">
           BO1 仍用“选游戏胜者”；BO3 及以上改为填比分。
         </p>
       </div>

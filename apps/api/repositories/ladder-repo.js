@@ -3,6 +3,7 @@ import {
   ACTIVE_DAYS,
   PROVISIONAL_GAMES,
   computeLadder,
+  lastGameByPlayer,
   randomizeSeedOrder,
   sortForSeeds,
   assignPercentileTiers,
@@ -10,6 +11,7 @@ import {
 } from '../lib/ladder.js';
 import { getPlayerDisplayName } from './player-repo.js';
 import { TournamentRepo } from './tournament-repo.js';
+import { computeMatchRaces } from '../lib/match-races.js';
 
 export function LadderRepo(db) {
   const tournaments = TournamentRepo(db);
@@ -42,6 +44,82 @@ export function LadderRepo(db) {
   async function loadPlayers() {
     const res = await db.query('SELECT id, flag, team FROM axsuck.players');
     return new Map(res.rows.map((p) => [p.id, p]));
+  }
+
+  // Map of player id -> ISO timestamp of their latest completed game. This is
+  // the same activity signal the ladder leaderboard filters on.
+  async function lastGameAt() {
+    const games = await loadGames();
+    const latest = lastGameByPlayer(games);
+    return new Map(
+      [...latest.entries()].map(([id, ms]) => [id, new Date(ms).toISOString()])
+    );
+  }
+
+  // Race per side for the given matches, derived from uploaded replays. Only
+  // the identity/race fields of each replay player are pulled out of the JSON
+  // blob, so this stays cheap even though parsed_data is large.
+  async function loadMatchRaces(games) {
+    const matchIds = [...new Set(games.map((g) => g.id))];
+    if (matchIds.length === 0) return new Map();
+
+    const replayRows = (await db.query(`
+      SELECT
+        r.match_id,
+        COALESCE(jsonb_agg(jsonb_build_object(
+          'name', pl->>'name',
+          'race', pl->>'race',
+          'pick_race', pl->>'pick_race',
+          'play_race', pl->>'play_race',
+          'bnet_url', pl->>'bnet_url',
+          'toon_handle', pl->>'toon_handle',
+          'region_id', CASE WHEN pl->>'region_id' ~ '^[0-9]+$' THEN (pl->>'region_id')::int END,
+          'subregion', CASE WHEN pl->>'subregion' ~ '^[0-9]+$' THEN (pl->>'subregion')::int END,
+          'toon_id', CASE WHEN pl->>'toon_id' ~ '^[0-9]+$' THEN (pl->>'toon_id')::bigint END,
+          'result', pl->>'result'
+        )) FILTER (WHERE pl IS NOT NULL), '[]'::jsonb) AS players
+      FROM axsuck.match_replays r
+      LEFT JOIN LATERAL jsonb_array_elements(r.parsed_data::jsonb->'teams') AS team ON TRUE
+      LEFT JOIN LATERAL jsonb_array_elements(team->'players') AS pl ON TRUE
+      WHERE r.match_id = ANY($1::int[])
+      GROUP BY r.id, r.match_id
+    `, [matchIds])).rows;
+
+    if (replayRows.length === 0) return new Map();
+
+    const [playerRows, accountRows] = await Promise.all([
+      db.query('SELECT id, battle_tags, bnet_ids FROM axsuck.players'),
+      db.query(`
+        SELECT tournament_id, player_id, account_name, url, toon_handle, region, subregion
+        FROM axsuck.tournament_player_accounts
+      `),
+    ]);
+    const accountsByPlayer = {};
+    for (const account of accountRows.rows) {
+      (accountsByPlayer[account.player_id] = accountsByPlayer[account.player_id] || []).push(account);
+    }
+
+    return computeMatchRaces({
+      matches: games,
+      replays: replayRows,
+      players: playerRows.rows,
+      accountsByPlayer,
+    });
+  }
+
+  async function ratingLabData() {
+    const [games, playerRows] = await Promise.all([loadGames(), loadPlayers()]);
+    const races = await loadMatchRaces(games);
+    const players = new Map(
+      [...playerRows.entries()].map(([id, player]) => [
+        id,
+        {
+          ...player,
+          display_name: getPlayerDisplayName(player) || id
+        }
+      ])
+    );
+    return { games, races, players };
   }
 
   async function getRatings({ activeDays = ACTIVE_DAYS, includeInactive = false } = {}) {
@@ -98,21 +176,28 @@ export function LadderRepo(db) {
     const tournamentNames = new Map(
       games.map((g) => [g.tournament_id, g.tournament_name])
     );
+    const playerHistory = history.filter((h) => h.player_id === playerId);
+    const matchIds = new Set(playerHistory.map((h) => h.game_id));
+    const matchRaces = await loadMatchRaces(games.filter((g) => matchIds.has(g.id)));
     // `history` is already in Elo calculation order; reverse it for newest-first
     // instead of re-sorting by timestamps (bulk-imported matches can share dates).
-    const rows = history
-      .filter((h) => h.player_id === playerId)
+    const rows = playerHistory
       .reverse()
-      .map((h) => ({
-        ...h,
-        opponent_name: byId.get(h.opponent_id)?.display_name || h.opponent_id,
-        tournament_name: tournamentNames.get(h.tournament_id) || h.tournament_id,
-        mmr_before: Math.round(h.rating_before),
-        mmr_after: Math.round(h.rating_after),
-        mmr_delta: Math.round(h.delta),
-        opponent_mmr: Math.round(h.opponent_rating_before),
-        opponent_mmr_after: Math.round(h.opponent_rating_after),
-      }));
+      .map((h) => {
+        const races = matchRaces.get(h.game_id);
+        return {
+          ...h,
+          opponent_name: byId.get(h.opponent_id)?.display_name || h.opponent_id,
+          tournament_name: tournamentNames.get(h.tournament_id) || h.tournament_id,
+          mmr_before: Math.round(h.rating_before),
+          mmr_after: Math.round(h.rating_after),
+          mmr_delta: Math.round(h.delta),
+          opponent_mmr: Math.round(h.opponent_rating_before),
+          opponent_mmr_after: Math.round(h.opponent_rating_after),
+          race: races?.get(h.player_id)?.race || null,
+          opponent_race: races?.get(h.opponent_id)?.race || null,
+        };
+      });
 
     return {
       ...player,
@@ -141,8 +226,8 @@ export function LadderRepo(db) {
     };
   }
 
-  async function suggestSeeds(tournamentId) {
-    const [registrations, { byId }] = await Promise.all([
+  async function seedCandidates(tournamentId) {
+    const [registrations, { byId }, tournament] = await Promise.all([
       db.query(
         `
         SELECT tp.player_id AS id, tp.seed, tp.registered_at,
@@ -154,6 +239,7 @@ export function LadderRepo(db) {
         [tournamentId]
       ),
       getRatings({ includeInactive: true }),
+      tournaments.getById(tournamentId),
     ]);
 
     const players = registrations.rows.map((row) => {
@@ -177,7 +263,14 @@ export function LadderRepo(db) {
       });
     });
 
-    return sortForSeeds(players).map((p, index) => ({ ...p, seed: index + 1 }));
+    // Loser-advances brackets reward the lowest MMR with the top seed (and the
+    // bye), so invert the MMR direction for those tournaments.
+    return { players, descending: !tournament?.loser_advances };
+  }
+
+  async function suggestSeeds(tournamentId) {
+    const { players, descending } = await seedCandidates(tournamentId);
+    return sortForSeeds(players, { descending }).map((p, index) => ({ ...p, seed: index + 1 }));
   }
 
   async function setSeedMode(tournamentId, mode) {
@@ -205,13 +298,20 @@ export function LadderRepo(db) {
     tournamentId,
     { band = 80, keepTop = 2, keepBottom = 2 } = {}
   ) {
-    const ordered = await suggestSeeds(tournamentId);
-    const randomized = randomizeSeedOrder(ordered, { band, keepTop, keepBottom });
+    const { players, descending } = await seedCandidates(tournamentId);
+    const randomized = randomizeSeedOrder(players, {
+      band,
+      keepTop,
+      keepBottom,
+      descending,
+    });
     return applySeeds(tournamentId, randomized, 'manual');
   }
 
   return {
     loadGames,
+    lastGameAt,
+    ratingLabData,
     getRatings,
     leaderboard,
     playerDetail,

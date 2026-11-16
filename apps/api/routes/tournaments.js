@@ -5,6 +5,7 @@ import { LadderRepo } from '../repositories/ladder-repo.js';
 import { Readable } from 'stream';
 import { getPlayerInfoFromReplay, bnetEntryKey } from './replays.js';
 import { buildCalendarFeed, buildTournamentIcs } from '../lib/calendar.js';
+import { computeMatchRaces } from '../lib/match-races.js';
 
 export default async function tournamentsRoutes(fastify) {
   const repo = TournamentRepo(fastify.db);
@@ -37,43 +38,61 @@ export default async function tournamentsRoutes(fastify) {
       ? (await fastify.db.query('SELECT * FROM axsuck.match_replays WHERE match_id = ANY($1::int[])', [matchIds])).rows
       : [];
 
+    // Race evidence per match. `race` stays the actual race for compatibility;
+    // the bracket uses pick (Random stays R) plus the actual play race.
+    const matchRaces = computeMatchRaces({
+      matches: ms,
+      replays,
+      players,
+      accountsByPlayer
+    });
+    const matchesWithRaces = ms.map(m => {
+      const races = matchRaces.get(m.id);
+      const p1 = races?.get(m.player1_id);
+      const p2 = races?.get(m.player2_id);
+      return {
+        ...m,
+        // `race` stays the actual race for older consumers; the bracket uses
+        // pick (Random stays R) plus the actual play race for a second icon.
+        p1_race: p1?.race || null,
+        p1_pick_race: p1?.pick_race || null,
+        p1_play_race: p1?.play_race || null,
+        p2_race: p2?.race || null,
+        p2_pick_race: p2?.pick_race || null,
+        p2_play_race: p2?.play_race || null
+      };
+    });
+
     const playerRaces = {};
+    const playerPlayRaces = {};
     for (const p of players) {
       playerRaces[p.id] = {};
+      playerPlayRaces[p.id] = {};
     }
-
-    for (const r of replays) {
-      let parsedData;
-      try {
-        parsedData = typeof r.parsed_data === 'string' ? JSON.parse(r.parsed_data) : r.parsed_data;
-      } catch (_) {
-        continue;
-      }
-      for (const p of players) {
-        const repInfo = getPlayerInfoFromReplay(
-          p.id,
-          p.display_name,
-          p.battle_tags,
-          p.bnet_ids,
-          parsedData,
-          accountsByPlayer[p.id] || []
-        );
-        if (repInfo && repInfo.race) {
-          const raceLetter = repInfo.race[0].toUpperCase();
-          if (raceLetter !== '?') {
-            playerRaces[p.id][raceLetter] = (playerRaces[p.id][raceLetter] || 0) + 1;
-          }
+    for (const byPlayer of matchRaces.values()) {
+      for (const [playerId, info] of byPlayer) {
+        if (!playerRaces[playerId]) continue;
+        for (const [race, count] of Object.entries(info.pick_counts || {})) {
+          playerRaces[playerId][race] = (playerRaces[playerId][race] || 0) + count;
+        }
+        for (const [race, count] of Object.entries(info.play_counts || {})) {
+          playerPlayRaces[playerId][race] = (playerPlayRaces[playerId][race] || 0) + count;
         }
       }
     }
 
+    const topRaceOf = (counts) => {
+      const sorted = Object.entries(counts || {}).sort((a, b) => b[1] - a[1]);
+      return sorted.length > 0 ? sorted[0][0] : null;
+    };
+
     const playersWithRace = players.map(p => {
-      const races = playerRaces[p.id] || {};
-      const sorted = Object.entries(races).sort((a, b) => b[1] - a[1]);
-      const detectedRace = sorted.length > 0 ? sorted[0][0] : 'U';
+      const pickRace = topRaceOf(playerRaces[p.id]);
+      const playRace = topRaceOf(playerPlayRaces[p.id]);
       return {
         ...p,
-        race: detectedRace,
+        race: pickRace || 'U',
+        play_race: playRace || null,
         tournament_accounts: accountsByPlayer[p.id] || []
       };
     });
@@ -96,7 +115,7 @@ export default async function tournamentsRoutes(fastify) {
     return {
       ...t,
       players: playersWithLadder,
-      matches: ms,
+      matches: matchesWithRaces,
       votes,
       custom_votes,
       accounts: tournamentAccounts

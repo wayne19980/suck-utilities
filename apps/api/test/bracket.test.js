@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   describeBracket,
+  findLateEntrySlot,
   LIQUIPEDIA_BRACKET_TEMPLATES,
   liquipediaBracketId,
   liquipediaBracketTemplate,
@@ -84,6 +85,66 @@ test("17/31/32 templates match the documented structures", () => {
   assert.equal(liquipediaBracketTemplate(31), "Bracket/2L1DH4LH8LH16L");
   assert.equal(liquipediaBracketTemplate(32), "Bracket/32");
   assert.equal(Object.keys(LIQUIPEDIA_BRACKET_TEMPLATES).length, 31);
+});
+
+function fivePlayerBracket() {
+  return [
+    { id: 1, round: 3, position: 1, player1_id: "seed1", player2_id: null, score1: 0, score2: 0, winner_id: "seed1", status: "completed" },
+    { id: 2, round: 3, position: 2, player1_id: "seed4", player2_id: "seed5", score1: 0, score2: 0, winner_id: null, status: "pending" },
+    { id: 3, round: 3, position: 3, player1_id: "seed2", player2_id: null, score1: 0, score2: 0, winner_id: "seed2", status: "completed" },
+    { id: 4, round: 3, position: 4, player1_id: "seed3", player2_id: null, score1: 0, score2: 0, winner_id: "seed3", status: "completed" },
+    { id: 5, round: 2, position: 1, player1_id: "seed1", player2_id: null, score1: 0, score2: 0, winner_id: null, status: "pending" },
+    { id: 6, round: 2, position: 2, player1_id: "seed2", player2_id: "seed3", score1: 0, score2: 0, winner_id: null, status: "pending" },
+    { id: 7, round: 1, position: 1, player1_id: null, player2_id: null, score1: 0, score2: 0, winner_id: null, status: "pending" },
+  ];
+}
+
+test("findLateEntrySlot picks the first open bye", () => {
+  const slot = findLateEntrySlot(fivePlayerBracket());
+  assert.equal(slot.match.id, 1);
+  assert.equal(slot.nextMatch.id, 5);
+  assert.equal(slot.slotKey, "player1_id");
+});
+
+test("findLateEntrySlot pairs the new last seed with the last bye", () => {
+  const seeds = new Map([
+    ["seed1", 1],
+    ["seed2", 2],
+    ["seed3", 3],
+  ]);
+  const slot = findLateEntrySlot(fivePlayerBracket(), {
+    playerSeeds: seeds,
+    lastByeSeed: 3,
+  });
+  assert.equal(slot.match.id, 4);
+  assert.equal(slot.nextMatch.id, 6);
+  assert.equal(slot.slotKey, "player2_id");
+});
+
+test("findLateEntrySlot skips byes whose next match already has a result", () => {
+  const matches = fivePlayerBracket().map((m) =>
+    m.id === 5 ? { ...m, status: "completed", winner_id: "seed1" } : m
+  );
+  const slot = findLateEntrySlot(matches);
+  assert.equal(slot.match.id, 3);
+  assert.equal(slot.nextMatch.id, 6);
+});
+
+test("findLateEntrySlot skips the live match and full brackets", () => {
+  const single = [
+    { id: 1, round: 2, position: 1, player1_id: "seed1", player2_id: null, score1: 0, score2: 0, winner_id: "seed1", status: "completed" },
+    { id: 2, round: 2, position: 2, player1_id: "seed2", player2_id: "seed3", score1: 0, score2: 0, winner_id: null, status: "pending" },
+    { id: 3, round: 1, position: 1, player1_id: "seed1", player2_id: null, score1: 0, score2: 0, winner_id: null, status: "pending" },
+  ];
+  assert.equal(findLateEntrySlot(single, { activeMatchId: 3 }), null);
+  assert.equal(findLateEntrySlot(single).match.id, 1);
+
+  const full = [
+    { id: 1, round: 2, position: 1, player1_id: "a", player2_id: "b", score1: 0, score2: 0, winner_id: null, status: "pending" },
+    { id: 2, round: 2, position: 2, player1_id: "c", player2_id: "d", score1: 0, score2: 0, winner_id: null, status: "pending" },
+    { id: 3, round: 1, position: 1, player1_id: null, player2_id: null, score1: 0, score2: 0, winner_id: null, status: "pending" },
+  ];
+  assert.equal(findLateEntrySlot(full), null);
 });
 
 test("SUCK ST bracket ids use their own prefix and a four-digit event number", () => {

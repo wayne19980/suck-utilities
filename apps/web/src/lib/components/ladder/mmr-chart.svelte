@@ -134,7 +134,7 @@
         x={PAD.left - 8}
         y={tick.y + 3}
         text-anchor="end"
-        class="fill-muted-foreground text-[9px] font-mono"
+        class="fill-muted-foreground text-[11px] font-mono"
       >
         {tick.value}
       </text>
@@ -155,7 +155,7 @@
         x={tick.x}
         y={H - 8}
         text-anchor="middle"
-        class="fill-muted-foreground text-[9px]"
+        class="fill-muted-foreground text-[11px]"
       >
         {tick.label}
       </text>

@@ -2,7 +2,7 @@
 
 Standalone StarCraft 2 tournament web app: a SvelteKit SPA (SSR disabled, static adapter) built with Svelte 5, Tailwind CSS v4, and shadcn-svelte. It talks to `suck-tournament-api`.
 
-This app lives in the `suck-utilities` repository; see the root `README.md`.
+This is an on-demand app in the Wayne-Monorepo; see the root `AGENTS.md`.
 
 ## Commands
 

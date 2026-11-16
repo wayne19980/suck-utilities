@@ -4,6 +4,12 @@
 
 S.U.C.K SC2 水友赛工具集。单淘赛事的报名、种子、对阵、投票、比分、OBS overlay，以及 SC2 录像解析与 Liquipedia wiki 生成。
 
+## 同步说明
+
+本仓库是 Wayne-Monorepo 的公开镜像：`apps/api` / `apps/web` 分别对应 monorepo 的
+`apps/suck-tournament-api` / `apps/suck-tournament-web`。代码以 monorepo 为准；本仓库由同步提交更新，
+不要在这里单独改代码（会被下次同步覆盖）。
+
 ## Layout
 
 ```

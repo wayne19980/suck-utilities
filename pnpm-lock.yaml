@@ -230,7 +230,7 @@ importers:
         specifier: ^3.12.2
         version: 3.12.4
       '@lucide/svelte':
-        specifier: ^1.21.0
+        specifier: ^1.61.0
         version: 1.61.0(svelte@5.57.2)
       '@sveltejs/adapter-static':
         specifier: ^3.0.10
@@ -245,7 +245,7 @@ importers:
         specifier: ^4.2.2
         version: 4.3.3(vite@6.4.5(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.1))
       bits-ui:
-        specifier: ^2.18.1
+        specifier: ^2.20.2
         version: 2.20.2(@internationalized/date@3.12.4)(@sveltejs/kit@2.70.3(@sveltejs/vite-plugin-svelte@5.1.1(svelte@5.57.2)(vite@6.4.5(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.1)))(svelte@5.57.2)(vite@6.4.5(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.1)))(svelte@5.57.2)
       svelte:
         specifier: ^5.28.2

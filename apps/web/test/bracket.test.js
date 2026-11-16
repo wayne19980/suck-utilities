@@ -5,6 +5,7 @@ import {
   displayRound,
   maxRound,
   playableMatchIds,
+  recommendPendingMatches,
   roundLabel,
   roundShortLabel,
 } from "../src/lib/bracket.js";
@@ -76,4 +77,80 @@ test("playableMatchIds skips TBD/completed matches and sorts by bracket order", 
 test("maxRound ignores missing and zero rounds", () => {
   assert.equal(maxRound([]), 1);
   assert.equal(maxRound([{ round: 0 }, { round: 3 }, { round: 2 }]), 3);
+});
+
+test("recommendPendingMatches avoids back-to-back players when possible", () => {
+  const matches = [
+    { id: 1, round: 2, position: 1, status: "pending", player1_id: "a", player2_id: "b" },
+    { id: 2, round: 2, position: 2, status: "pending", player1_id: "b", player2_id: "c" },
+    { id: 3, round: 2, position: 3, status: "pending", player1_id: "d", player2_id: "e" },
+  ];
+  const ordered = recommendPendingMatches(matches);
+  assert.deepEqual(ordered.map((m) => m.id), [1, 3, 2]);
+});
+
+test("recommendPendingMatches falls back when every match shares a player", () => {
+  const matches = [
+    { id: 1, round: 2, position: 1, status: "pending", player1_id: "a", player2_id: "b" },
+    { id: 2, round: 2, position: 2, status: "pending", player1_id: "a", player2_id: "c" },
+  ];
+  const ordered = recommendPendingMatches(matches);
+  assert.deepEqual(ordered.map((m) => m.id), [1, 2]);
+});
+
+
+test("buildMatchOrder skips hidden bye matches", () => {
+  const matches = [
+    { id: 1, round: 2, position: 1, status: "completed", winner_id: "a", player1_id: "a", player2_id: null },
+    { id: 2, round: 2, position: 2, status: "pending", player1_id: "b", player2_id: "c" },
+    { id: 3, round: 2, position: 3, status: "completed", winner_id: "d", player1_id: "d", player2_id: null },
+    { id: 4, round: 2, position: 4, status: "pending", player1_id: "e", player2_id: "f" },
+    { id: 5, round: 1, position: 1, status: "pending", player1_id: null, player2_id: null },
+  ];
+  const order = buildMatchOrder(matches);
+  assert.equal(order.has(1), false);
+  assert.equal(order.has(3), false);
+  assert.equal(order.get(2), 1);
+  assert.equal(order.get(4), 2);
+  assert.equal(order.get(5), 3);
+});
+
+test("buildMatchOrder sorts a round by previous-round byes", () => {
+  const bye = (id, position, seed) => ({
+    id,
+    round: 4,
+    position,
+    status: "completed",
+    winner_id: seed,
+    player1_id: seed,
+    player2_id: null,
+  });
+  const matches = [
+    bye("r1p1", 1, "seed1"),
+    { id: "r1p2", round: 4, position: 2, status: "pending", player1_id: "欧布桑", player2_id: "EthanCheung" },
+    bye("r1p3", 3, "seed8"),
+    bye("r1p4", 4, "seed5"),
+    bye("r1p5", 5, "seed4"),
+    { id: "r1p6", round: 4, position: 6, status: "pending", player1_id: "Vermilion", player2_id: "Starshim" },
+    bye("r1p7", 7, "seed3"),
+    { id: "r1p8", round: 4, position: 8, status: "pending", player1_id: "老刀把子", player2_id: "Hip" },
+    { id: "qf1", round: 3, position: 1, status: "pending", player1_id: "Buqun", player2_id: null },
+    { id: "qf2", round: 3, position: 2, status: "pending", player1_id: "Sonde", player2_id: "wayne19980" },
+    { id: "qf3", round: 3, position: 3, status: "pending", player1_id: "Crepuscule", player2_id: null },
+    { id: "qf4", round: 3, position: 4, status: "pending", player1_id: "Sarutobi", player2_id: null },
+    { id: "sf1", round: 2, position: 1, status: "pending", player1_id: null, player2_id: null },
+    { id: "sf2", round: 2, position: 2, status: "pending", player1_id: null, player2_id: null },
+    { id: "final", round: 1, position: 1, status: "pending", player1_id: null, player2_id: null },
+  ];
+  const order = buildMatchOrder(matches);
+  assert.equal(order.get("r1p2"), 1);
+  assert.equal(order.get("r1p6"), 2);
+  assert.equal(order.get("r1p8"), 3);
+  assert.equal(order.get("qf2"), 4);
+  assert.equal(order.get("qf1"), 5);
+  assert.equal(order.get("qf3"), 6);
+  assert.equal(order.get("qf4"), 7);
+  assert.equal(order.get("sf1"), 8);
+  assert.equal(order.get("sf2"), 9);
+  assert.equal(order.get("final"), 10);
 });

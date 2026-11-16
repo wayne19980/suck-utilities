@@ -24,12 +24,26 @@ async function request(path, options = {}) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || err.message || 'Request failed');
+    const error = new Error(err.error || err.message || 'Request failed');
+    error.status = res.status;
+    throw error;
   }
   return res.json();
 }
 
 const enc = encodeURIComponent;
+
+// The stream key is a stateless JWT issued by POST /broadcasts/key. It only
+// protects broadcast writes; reads are public so an OBS source needs no auth.
+function streamKey() {
+  if (typeof window === 'undefined') return '';
+  return localStorage.getItem('suck_stream_key') || '';
+}
+
+function authHeaders() {
+  const key = streamKey();
+  return key ? { Authorization: `Bearer ${key}` } : {};
+}
 
 export const API = {
   // Tournaments
@@ -46,7 +60,16 @@ export const API = {
   setActiveMatch: (id, active_match_id) => request(`/tournaments/${enc(id)}/active-match`, { method: 'POST', body: JSON.stringify({ active_match_id }) }),
   setOverlayState: (id, overlay_scene, overlay_round) => request(`/tournaments/${enc(id)}/overlay-state`, { method: 'POST', body: JSON.stringify({ overlay_scene, overlay_round }) }),
 
+  // Broadcast: the caster-owned overlay pointer behind /overlay?user=<id>
+  claimStreamKey: () => request('/broadcasts/key', { method: 'POST', body: JSON.stringify({}) }),
+  getMyBroadcast: () => request('/broadcasts/me', { headers: authHeaders() }),
+  startBroadcast: (data) => request('/broadcasts/me', { method: 'POST', headers: authHeaders(), body: JSON.stringify(data) }),
+  updateBroadcastMatch: (match_id) => request('/broadcasts/me', { method: 'PATCH', headers: authHeaders(), body: JSON.stringify({ match_id }) }),
+  endBroadcast: () => request('/broadcasts/me', { method: 'DELETE', headers: authHeaders() }),
+  getBroadcast: (playerId) => request(`/broadcasts/${enc(playerId)}`),
+
   // Ladder
+  getRatingLab: () => request('/rating-lab'),
   getLadder: ({ includeInactive = false, days } = {}) => {
     const params = new URLSearchParams();
     if (days) params.set('days', String(days));
@@ -78,6 +101,7 @@ export const API = {
   mergePlayer: (id, targetId) => request(`/players/${enc(id)}/merge`, { method: 'POST', body: JSON.stringify({ targetId }) }),
   register: (tournamentId, player_id) => request(`/tournaments/${enc(tournamentId)}/register`, { method: 'POST', body: JSON.stringify({ player_id }) }),
   unregister: (tournamentId, player_id) => request(`/tournaments/${enc(tournamentId)}/register`, { method: 'DELETE', body: JSON.stringify({ player_id }) }),
+  lateEntry: (tournamentId, player_id) => request(`/tournaments/${enc(tournamentId)}/late-entry`, { method: 'POST', body: JSON.stringify({ player_id }) }),
 
   // Matches / Results
   submitResult: (tournamentId, matchId, score1, score2) =>

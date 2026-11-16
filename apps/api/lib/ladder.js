@@ -113,6 +113,24 @@ function timestampOf(value) {
 }
 
 /**
+ * Latest completed game timestamp per player, in milliseconds.
+ * Uses the same `played_at` source and filters as `computeLadder`, so the
+ * "active within N days" rule matches the ladder page exactly.
+ */
+export function lastGameByPlayer(games = []) {
+  const latest = new Map();
+  for (const game of games) {
+    const at = timestampOf(game.played_at);
+    if (!at) continue;
+    for (const id of [game.player1_id, game.player2_id]) {
+      if (!id) continue;
+      if (!latest.has(id) || at > latest.get(id)) latest.set(id, at);
+    }
+  }
+  return latest;
+}
+
+/**
  * Compute current MMR from chronologically ordered games.
  * Each game: { id, player1_id, player2_id, score1, score2, played_at, ... }
  * Returns { players, history }; players are already ranked.
@@ -229,13 +247,20 @@ export function computeLadder(games = []) {
 /**
  * Seed order: rated players by MMR (provisional included), then unrated players by
  * registration time. `registered_at` is only a tiebreaker.
+ *
+ * `descending` (default) puts the highest MMR at seed 1, which is the right
+ * direction when the match winner advances. In a loser-advances (SUCK) bracket
+ * the strongest contender is the *lowest* MMR, so callers pass `descending:
+ * false` to make the lowest MMR the top seed and give it the bye.
  */
-export function sortForSeeds(players = []) {
+export function sortForSeeds(players = [], { descending = true } = {}) {
   return [...players].sort((a, b) => {
     const aRated = (a.games || 0) > 0;
     const bRated = (b.games || 0) > 0;
     if (aRated !== bRated) return aRated ? -1 : 1;
-    if (a.rating !== b.rating) return b.rating - a.rating;
+    if (a.rating !== b.rating) {
+      return descending ? b.rating - a.rating : a.rating - b.rating;
+    }
     if ((a.games || 0) !== (b.games || 0)) return (b.games || 0) - (a.games || 0);
     const at = timestampOf(a.last_game_at);
     const bt = timestampOf(b.last_game_at);
@@ -247,13 +272,15 @@ export function sortForSeeds(players = []) {
   });
 }
 
-function jitterSortInPlace(list, jitter, rng) {
+function jitterSortInPlace(list, jitter, rng, descending = true) {
   const keyed = list.map((player, index) => ({
     player,
     index,
     key: (player.rating || 0) + (rng() * 2 - 1) * jitter,
   }));
-  keyed.sort((a, b) => b.key - a.key || a.index - b.index);
+  keyed.sort((a, b) =>
+    descending ? b.key - a.key || a.index - b.index : a.key - b.key || a.index - b.index
+  );
   list.splice(0, list.length, ...keyed.map((item) => item.player));
 }
 
@@ -265,9 +292,9 @@ function jitterSortInPlace(list, jitter, rng) {
  */
 export function randomizeSeedOrder(
   players = [],
-  { band = 80, keepTop = 2, keepBottom = 2, maxGroup = 4, rng = Math.random } = {}
+  { band = 80, keepTop = 2, keepBottom = 2, maxGroup = 4, descending = true, rng = Math.random } = {}
 ) {
-  const ordered = sortForSeeds(players);
+  const ordered = sortForSeeds(players, { descending });
   const rated = ordered.filter((p) => (p.games || 0) > 0);
   const unrated = ordered.filter((p) => !(p.games || 0));
 
@@ -277,7 +304,7 @@ export function randomizeSeedOrder(
     if (
       current.length > 0 &&
       (current.length >= maxGroup ||
-        current[0].rating - player.rating > band)
+        Math.abs(current[0].rating - player.rating) > band)
     ) {
       groups.push(current);
       current = [];
@@ -302,7 +329,7 @@ export function randomizeSeedOrder(
       const slice = group.slice(from - start, to - start);
       // Jitter the rating slightly instead of a full shuffle: nearby players can
       // trade places, but the list stays roughly ordered (no 3000 jumping above 3100).
-      jitterSortInPlace(slice, band / 4, rng);
+      jitterSortInPlace(slice, band / 4, rng, descending);
       group.splice(from - start, slice.length, ...slice);
     }
     result.push(...group);

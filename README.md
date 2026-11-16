@@ -53,6 +53,12 @@ pnpm dev
 - `apps/api/.env.example` — 端口、`DATABASE_URL`、QQ 群白名单、Web Push（VAPID）密钥
 - 仓库里没有任何真实凭证；`apps/api/.env` 已被 gitignore
 
+## 与 monorepo 的关系
+
+本仓库是 Wayne-Monorepo 的公开镜像：`apps/api` / `apps/web` 分别对应 monorepo 的
+`apps/suck-tournament-api` / `apps/suck-tournament-web`（含 OBS overlay / 直播绑定、best-of、时区换算等）。
+改动以 monorepo 为准，此处通过同步提交更新；`BACKLOG.md` 也以 monorepo 文档为准。
+
 ## 历史
 
 早期的 SQLite 版本和完整的提交记录见 [HISTORY.md](./HISTORY.md)。公开仓库的历史已在 2026-10 重写，移除了真实录像、玩家 Battle.net 链接和凭证。

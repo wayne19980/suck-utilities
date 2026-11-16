@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LadderRepo } from "../repositories/ladder-repo.js";
 
-function makeDb({ games, players, registrations }) {
+function makeDb({ games, players, registrations, tournament = { id: "t1", loser_advances: 0 } }) {
   const seedWrites = [];
   const modeWrites = [];
 
@@ -13,6 +13,12 @@ function makeDb({ games, players, registrations }) {
     }
     if (text.startsWith("SELECT id, flag, team FROM axsuck.players")) {
       return { rows: players };
+    }
+    if (text.startsWith("SELECT") && text.includes("FROM axsuck.match_replays r")) {
+      return { rows: [] };
+    }
+    if (text.startsWith("SELECT") && text.includes("FROM axsuck.tournaments t")) {
+      return { rows: tournament ? [tournament] : [] };
     }
     if (text.startsWith("SELECT") && text.includes("FROM axsuck.tournament_players tp")) {
       return { rows: registrations };
@@ -157,4 +163,17 @@ test("autoSeeds writes 1..N seeds and switches the tournament to auto", async ()
     [4, "t1", "p4"],
   ]);
   assert.deepEqual(modeWrites, [["auto", "t1"]]);
+});
+
+test("suggestSeeds gives the lowest MMR the top seed in loser-advances tournaments", async () => {
+  const { db } = makeDb({
+    games,
+    players,
+    registrations,
+    tournament: { id: "t1", loser_advances: 1 },
+  });
+  const order = await LadderRepo(db).suggestSeeds("t1");
+  assert.deepEqual(order.map((p) => p.id), ["p3", "p2", "p1", "p4"]);
+  assert.equal(order[0].seed, 1);
+  assert.equal(order[3].seed, 4);
 });

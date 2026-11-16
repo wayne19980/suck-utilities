@@ -5,7 +5,10 @@
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { userState } from "$lib/user.svelte.js";
+  import { startBroadcast, updateBroadcastMatch, endBroadcast, hasStreamKey } from "$lib/broadcast.js";
+  import * as Accordion from "$lib/components/ui/accordion/index.js";
   import { Calendar } from "$lib/components/ui/calendar/index.js";
+  import * as Select from "$lib/components/ui/select/index.js";
   import {
     Popover,
     PopoverContent,
@@ -15,11 +18,13 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { accountRegionLabel, accountKey } from "$lib/utils.js";
-  import { maxRound, roundLabel, buildMatchOrder } from "$lib/bracket.js";
+  import { maxRound, roundLabel, buildMatchOrder, recommendPendingMatches } from "$lib/bracket.js";
   import TierBadge from "$lib/components/TierBadge.svelte";
+import RaceIcon from "$lib/components/RaceIcon.svelte";
+  import PlayerDetail from "$lib/components/PlayerDetail.svelte";
+  import { isRecentlyActive, activityLabel } from "$lib/players.js";
   import MatchTime from "$lib/components/MatchTime.svelte";
   import { coalescedRefresh } from "$lib/coalesced-refresh.js";
-  import { isRecentlySeen } from "$lib/players.js";
   import * as Card from "$lib/components/ui/card/index.js";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { CalendarDate } from "@internationalized/date";
@@ -75,19 +80,36 @@
       (ap) => !(tournament?.players || []).some((tp) => tp.id === ap.id),
     ),
   );
-  let showInactiveReg = $state(false);
-  let selectedRegIds = $state([]);
   let activeUnregistered = $derived(
-    unregisteredPlayers.filter((p) => isRecentlySeen(p.last_seen_at)),
+    unregisteredPlayers.filter((p) => isRecentlyActive(p)),
   );
   let inactiveUnregistered = $derived(
-    unregisteredPlayers.filter((p) => !isRecentlySeen(p.last_seen_at)),
+    unregisteredPlayers.filter((p) => !isRecentlyActive(p)),
+  );
+  let selectedRegIds = $state([]);
+  let lateEntryId = $state("");
+  let lateEntryLoading = $state(false);
+  let lateEntryOptions = $derived(
+    [...activeUnregistered, ...inactiveUnregistered].map((p) => ({
+      value: p.id,
+      label: p.display_name || p.id,
+    })),
+  );
+  let lateEntryLabel = $derived(
+    lateEntryOptions.find((o) => o.value === lateEntryId)?.label ?? null,
   );
 
-  function toggleRegSelection(playerId) {
-    selectedRegIds = selectedRegIds.includes(playerId)
-      ? selectedRegIds.filter((id) => id !== playerId)
-      : [...selectedRegIds, playerId];
+  function addRegChip(raw) {
+    const id = String(raw || "").trim();
+    if (!id) return;
+    if (!selectedRegIds.includes(id)) {
+      selectedRegIds = [...selectedRegIds, id];
+    }
+    regInput = "";
+  }
+
+  function removeRegChip(id) {
+    selectedRegIds = selectedRegIds.filter((x) => x !== id);
   }
 
   // Replays integration states
@@ -97,6 +119,12 @@
   let activeReplayTab = $state("overview"); // overview, build_order, curves, chat
   let selectedReplay = $state(null);
   let uploadingReplays = $state(false);
+
+  // Player detail dialog (roster + bracket)
+  let playerDetailOpen = $state(false);
+  let playerDetailLoading = $state(false);
+  let playerDetailPlayer = $state(null);
+  let playerDetailCache = null;
 
   // Player Editing states
   let showPlayerEditDialog = $state(false);
@@ -371,7 +399,16 @@
     typeof window !== "undefined" &&
       localStorage.getItem("suck_stream_mode") === "1",
   );
+  // Non-streamers get a collapsed OBS control card; going live opens it.
+  let obsPanel = $state(
+    typeof window !== "undefined" &&
+      localStorage.getItem("suck_stream_mode") === "1"
+      ? "settings"
+      : "",
+  );
   let showStreamChecklist = $state(false);
+  // The caster-owned overlay pointer behind /overlay?user=<id>.
+  let broadcastBinding = $state(null);
   let streamChecks = $state({
     mic: false,
     voice: false,
@@ -547,9 +584,7 @@
   // Candidate matches the operator can hand off to
   let nextMatchCandidates = $derived.by(() => {
     if (!tournament?.matches?.length) return [];
-    return [...tournament.matches]
-      .filter((m) => m.status === "pending" && m.player1_id && m.player2_id)
-      .sort((a, b) => (matchOrder.get(a.id) ?? 0) - (matchOrder.get(b.id) ?? 0));
+    return recommendPendingMatches(tournament.matches, matchOrder);
   });
 
   // In "going live" mode, in progress with no live match => operator must choose the next match
@@ -617,6 +652,13 @@
       // Keep the bracket on screen first, then mark the match live so the overlay never flashes ingame
       await showHybridScene();
       await API.setActiveMatch(tid, matchId);
+      if (streamMode) {
+        try {
+          broadcastBinding = await updateBroadcastMatch(matchId);
+        } catch (bindErr) {
+          toast.error("更新固定直播链接失败: " + bindErr.message);
+        }
+      }
       nextMatchModalOpen = false;
       toast.success("已选择当前直播对局，倒计时结束后切换到大屏游戏内 HUD");
       startAutoHudCountdown();
@@ -637,24 +679,50 @@
     showStreamChecklist = true;
   }
 
-  function confirmStreamMode() {
+  async function confirmStreamMode() {
     if (!streamChecklistAllDone) return;
     streamMode = true;
+    obsPanel = "settings";
     if (typeof window !== "undefined") {
       localStorage.setItem("suck_stream_mode", "1");
     }
     showStreamChecklist = false;
     toast.success("已激活直播状态，将强制选择下一场直播对局");
+    await bindBroadcast(tournament?.active_match_id || null);
+  }
+
+  // Point the caster-owned /overlay?user=<id> link at this tournament. Going
+  // live on another event later just rewrites the same row, so OBS never changes.
+  async function bindBroadcast(matchId) {
+    if (!userState.id || !userState.qqGroup) {
+      toast.error("绑定固定直播链接需要先设置选手 ID 与 QQ 群号");
+      return;
+    }
+    try {
+      broadcastBinding = await startBroadcast({ tournamentId: tid, matchId });
+      toast.success(`固定直播链接已指向本场赛事（主播 ${userState.id}）`);
+    } catch (e) {
+      broadcastBinding = null;
+      toast.error("绑定固定直播链接失败: " + e.message);
+    }
   }
 
   function disableStreamMode() {
     streamMode = false;
+    obsPanel = "";
     if (typeof window !== "undefined") {
       localStorage.setItem("suck_stream_mode", "0");
     }
     clearAutoHudTimer();
     nextMatchModalOpen = false;
     toast.info("已结束直播状态");
+    // Clear the caster pointer so the fixed overlay URL drops back to standby
+    // instead of leaving the last event on air.
+    endBroadcast()
+      .then(() => {
+        broadcastBinding = null;
+      })
+      .catch((e) => toast.error("结束固定直播链接失败: " + e.message));
   }
 
   // When a hand-off is required, force the blocking modal open and cancel any stale countdown
@@ -671,6 +739,16 @@
   $effect(() => () => clearAutoHudTimer());
 
   onMount(load);
+
+  // Restore the caster binding chip after a reload; the pointer lives server-side.
+  onMount(() => {
+    if (!hasStreamKey() || !userState.id) return;
+    API.getMyBroadcast()
+      .then((binding) => {
+        if (binding && binding.player_id === userState.id) broadcastBinding = binding;
+      })
+      .catch(() => {});
+  });
 
   let eventSource = null;
   $effect(() => {
@@ -827,13 +905,12 @@
       document.getElementById("header-profile-button")?.click();
       return;
     }
-    const id = regInput.trim() || userState.id;
+    const id = userState.id;
     if (!id) return toast.error("请输入选手 ID");
     try {
       const players = await API.register(tid, id);
       tournament = { ...tournament, players };
       toast.success(`选手 ${id} 报名成功`);
-      regInput = "";
       await load();
 
       // Auto-update bracket preview
@@ -846,25 +923,31 @@
     }
   }
 
-  async function doBatchRegister() {
+  async function submitRegChips() {
     if (!userState.qqGroup || !userState.id) {
       toast.error("此操作需要先验证 QQ 群号与选手 ID。已为您打开配置面板！");
       document.getElementById("header-profile-button")?.click();
       return;
     }
-    if (selectedRegIds.length === 0) return toast.error("请先选择选手");
+    const pending = regInput.trim();
     const ids = [...selectedRegIds];
+    if (pending && !ids.includes(pending)) ids.push(pending);
+    if (ids.length === 0) return toast.error("请先添加选手 ID");
+
     let ok = 0;
+    const failed = [];
     const errors = [];
     for (const id of ids) {
       try {
         await API.register(tid, id);
         ok += 1;
       } catch (e) {
+        failed.push(id);
         errors.push(`${id}: ${e.message}`);
       }
     }
-    selectedRegIds = [];
+    regInput = "";
+    selectedRegIds = failed;
     await load();
     if ((tournament.players?.length || 0) >= 2) {
       try {
@@ -874,7 +957,7 @@
         console.warn("bracket regeneration failed:", e);
       }
     }
-    if (ok > 0) toast.success(`已批量报名 ${ok} 人`);
+    if (ok > 0) toast.success(`已报名 ${ok} 人`);
     if (errors.length > 0) toast.error(errors[0]);
   }
 
@@ -898,6 +981,27 @@
       }
     } catch (e) {
       toast.error(e.message);
+    }
+  }
+
+  async function submitLateEntry() {
+    if (!userState.qqGroup || !userState.id) {
+      toast.error("此操作需要先验证 QQ 群号与选手 ID。已为您打开配置面板！");
+      document.getElementById("header-profile-button")?.click();
+      return;
+    }
+    const id = lateEntryId.trim();
+    if (!id) return toast.error("请输入选手 ID");
+    lateEntryLoading = true;
+    try {
+      await API.lateEntry(tid, id);
+      lateEntryId = "";
+      await load();
+      toast.success(`选手 ${id} 已中途加入对阵`);
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      lateEntryLoading = false;
     }
   }
 
@@ -1798,6 +1902,41 @@
     showPlayerEditDialog = true;
   }
 
+  async function openPlayerDetail(playerId) {
+    if (!playerId) return;
+    playerDetailOpen = true;
+    playerDetailPlayer = null;
+    playerDetailLoading = true;
+    try {
+      if (!playerDetailCache) {
+        const [stats, ladder] = await Promise.all([
+          API.getPlayerStatistics(),
+          API.getLadder({ includeInactive: true }).catch(() => ({ players: [] })),
+        ]);
+        playerDetailCache = {
+          stats: stats?.players || [],
+          ladder: new Map((ladder?.players || []).map((p) => [p.id, p])),
+        };
+      }
+      const stats = playerDetailCache.stats.find((p) => p.id === playerId);
+      const l = playerDetailCache.ladder.get(playerId);
+      playerDetailPlayer = stats
+        ? {
+            ...stats,
+            mmr: l?.mmr ?? null,
+            tier: l?.tier ?? null,
+            ladder_rank: l?.rank ?? null,
+            ladder_games: l?.games ?? 0,
+            ladder_active: l?.active ?? false,
+          }
+        : null;
+    } catch (e) {
+      toast.error("加载选手详情失败: " + e.message);
+    } finally {
+      playerDetailLoading = false;
+    }
+  }
+
   function removeBnetId(idx) {
     editPlayerBnetIds = editPlayerBnetIds.filter((_, i) => i !== idx);
   }
@@ -2332,7 +2471,7 @@
           <span>选手名册</span>
           <Badge
             variant="outline"
-            class="text-[10px] bg-primary/10 text-primary border-primary/20"
+            class="text-[11px] bg-primary/10 text-primary border-primary/20"
           >
             {tournament.players?.length || 0} / {tournament.player_capacity}
             人
@@ -2352,19 +2491,26 @@
                   class="w-2.5 h-2.5 rounded-full bg-primary/30 border border-primary/50"
                 ></div>
                 {#if p.team}
-                  <span class="text-[10px] text-muted-foreground font-mono"
+                  <span class="text-[11px] text-muted-foreground font-mono"
                     >[{p.team}]</span
                   >
                 {/if}
-                <span class="truncate">{p.display_name}</span>
+                <button
+                  type="button"
+                  onclick={() => openPlayerDetail(p.id)}
+                  class="truncate text-left hover:text-primary hover:underline cursor-pointer"
+                  title="查看选手详情"
+                >
+                  {p.display_name}
+                </button>
                 {#if p.flag}
                   <span
-                    class="text-[9px] font-bold px-1 rounded bg-muted text-muted-foreground uppercase font-mono"
+                    class="text-[11px] font-bold px-1 rounded bg-muted text-muted-foreground uppercase font-mono"
                     >{p.flag}</span
                   >
                 {/if}
                 {#if p.seed}
-                  <span class="text-[10px] text-amber-500 font-bold"
+                  <span class="text-[11px] text-amber-500 font-bold"
                     >#{p.seed}</span
                   >
                 {/if}
@@ -2395,6 +2541,43 @@
             </p>
           {/if}
         </div>
+        {#if tournament.status === "in_progress"}
+          <div class="mt-3 pt-3 border-t border-border/60 space-y-2">
+            <div class="flex items-center gap-2">
+              <Select.Root
+                type="single"
+                bind:value={lateEntryId}
+                items={lateEntryOptions}
+              >
+                <Select.Trigger
+                  size="sm"
+                  class="h-8 flex-1 min-w-0 text-xs bg-background"
+                  disabled={lateEntryOptions.length === 0}
+                >
+                  {lateEntryLabel ?? "选择未报名选手"}
+                </Select.Trigger>
+                <Select.Content>
+                  {#each lateEntryOptions as option (option.value)}
+                    <Select.Item value={option.value} label={option.label}>
+                      {option.label}
+                    </Select.Item>
+                  {/each}
+                </Select.Content>
+              </Select.Root>
+              <Button
+                size="sm"
+                class="h-8 text-xs cursor-pointer shrink-0"
+                onclick={submitLateEntry}
+                disabled={lateEntryLoading || !lateEntryId}
+              >
+                中途加入
+              </Button>
+            </div>
+            <p class="text-[11px] text-muted-foreground leading-snug">
+              仅能填入尚未开打的轮空位；无空位时需重排对阵。
+            </p>
+          </div>
+        {/if}
       </Card.Content>
     </Card.Root>
   {/snippet}
@@ -2423,7 +2606,7 @@
               <div class="text-[11px] font-bold">
                 {streamMode ? "直播状态已激活" : "直播状态未激活"}
               </div>
-              <div class="text-[10px] text-muted-foreground leading-normal">
+              <div class="text-[11px] text-muted-foreground leading-normal">
                 激活后本页会强制选择下一场对局并自动切换大屏；仅影响本机，不影响其他访问者。
               </div>
             </div>
@@ -2438,6 +2621,12 @@
           </Button>
         </div>
 
+        <Accordion.Root type="single" collapsible bind:value={obsPanel}>
+          <Accordion.Item value="settings">
+            <Accordion.Trigger class="py-1.5 text-[11px] text-muted-foreground hover:no-underline">
+              直播设置（对局 / 大屏 / 源链接）
+            </Accordion.Trigger>
+            <Accordion.Content class="pt-2 pb-0">
         <div class="space-y-2">
           <span class="font-semibold text-muted-foreground block">当前直播对局:</span>
           {#if tournament?.matches?.length > 0}
@@ -2449,6 +2638,13 @@
                   const val = e.target.value;
                   try {
                     await API.setActiveMatch(tid, val ? parseInt(val) : null);
+                    if (streamMode) {
+                      try {
+                        broadcastBinding = await updateBroadcastMatch(val ? parseInt(val) : null);
+                      } catch (bindErr) {
+                        toast.error("更新固定直播链接失败: " + bindErr.message);
+                      }
+                    }
                     toast.success("当前直播对局已更新");
                   } catch (err) {
                     toast.error("更新直播对局失败: " + err.message);
@@ -2497,7 +2693,7 @@
             <div class="flex items-center justify-between gap-2">
               <span class="font-bold text-primary block text-[11px] shrink-0">当前显示大屏:</span>
               <select
-                class="flex h-8 rounded border border-primary/30 bg-background px-2 py-1 text-[10px] text-primary font-bold shadow-sm focus-visible:outline-none cursor-pointer"
+                class="flex h-8 rounded border border-primary/30 bg-background px-2 py-1 text-[11px] text-primary font-bold shadow-sm focus-visible:outline-none cursor-pointer"
                 value={tournament.overlay_scene || "auto"}
                 onchange={async (e) => {
                   const val = e.target.value;
@@ -2523,7 +2719,7 @@
               <div class="flex items-center justify-between gap-2 pt-2 border-t border-primary/10">
                 <span class="text-[11px] font-semibold text-muted-foreground shrink-0">展示轮次:</span>
                 <select
-                  class="h-7 rounded border border-input bg-background px-2 text-[10px] cursor-pointer"
+                  class="h-7 rounded border border-input bg-background px-2 text-[11px] cursor-pointer"
                   value={tournament.overlay_round || Math.max(...(tournament?.matches?.map(m => m.round) || [1]))}
                   onchange={async (e) => {
                     const val = parseInt(e.target.value);
@@ -2548,17 +2744,56 @@
           <span class="font-semibold text-muted-foreground block">OBS 浏览器源链接:</span>
           
           <div class="space-y-2.5">
+            <!-- Caster-bound link: the one that never changes between events -->
+            <div class="space-y-1.5 p-2.5 rounded-xl border border-primary/30 bg-primary/10">
+              <span class="font-bold text-primary block text-[11px]">🎙️ 我的固定直播链接（推荐）</span>
+              <span class="text-[11px] text-muted-foreground block leading-normal mb-1">
+                绑定到你本人：在任意赛事点「我要直播」，这个链接就自动跟过去，OBS 浏览器源不用再改地址。
+              </span>
+              {#if userState.id}
+                <div class="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    readonly
+                    class="flex-1 h-7 px-2 border border-primary/25 rounded bg-background text-[11px] select-all cursor-default text-primary font-mono"
+                    value={window.location.origin + `/overlay?user=${encodeURIComponent(userState.id)}`}
+                  />
+                  <Button
+                    size="icon-xs"
+                    class="h-7 w-7 cursor-pointer shrink-0 bg-primary text-black hover:bg-primary/90"
+                    onclick={() => {
+                      navigator.clipboard.writeText(window.location.origin + `/overlay?user=${encodeURIComponent(userState.id)}`);
+                      toast.success("已复制固定直播链接");
+                    }}
+                  >
+                    <CopyIcon class="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+                <span class="text-[11px] block {broadcastBinding ? 'text-emerald-500' : 'text-muted-foreground'}">
+                  {#if broadcastBinding}
+                    当前指向：{broadcastBinding.tournament_name || broadcastBinding.tournament_id}
+                  {:else}
+                    当前未绑定任何赛事（点「我要直播」后自动绑定本场）
+                  {/if}
+                </span>
+              {:else}
+                <span class="text-[11px] text-muted-foreground block">
+                  先在右上角设置选手 ID 与 QQ 群号，才能生成你的固定链接。
+                </span>
+              {/if}
+            </div>
+
             <!-- Unified Auto link -->
             <div class="space-y-1.5 p-2.5 rounded-xl border border-primary/20 bg-primary/5">
-              <span class="font-bold text-primary block text-[11px]">✨ 推荐：全自动智能切换直播源 (Unified Auto)</span>
-              <span class="text-[10px] text-muted-foreground block leading-normal mb-1">
+              <span class="font-bold text-primary block text-[11px]">✨ 本场专用：全自动智能切换直播源 (Unified Auto)</span>
+              <span class="text-[11px] text-muted-foreground block leading-normal mb-1">
                 放入 OBS 浏览器源即可。有直播中比赛时自动渲染游戏 HUD（透明底），无直播对局时自动渲染场间统计大屏（深色底，显示待开打对局和本轮详情）。
               </span>
               <div class="flex items-center gap-1.5">
                 <input
                   type="text"
                   readonly
-                  class="flex-1 h-7 px-2 border border-primary/25 rounded bg-background text-[10px] select-all cursor-default text-primary font-mono"
+                  class="flex-1 h-7 px-2 border border-primary/25 rounded bg-background text-[11px] select-all cursor-default text-primary font-mono"
                   value={window.location.origin + `/tournament/${tid}/overlay`}
                 />
                 <Button
@@ -2575,16 +2810,16 @@
             </div>
 
             <div class="h-px bg-border/40 my-2"></div>
-            <span class="text-[10px] font-bold text-muted-foreground block">特定单场景链接 (如有需要手动配置):</span>
+            <span class="text-[11px] font-bold text-muted-foreground block">特定单场景链接 (如有需要手动配置):</span>
 
             <div class="space-y-1">
               <div class="flex justify-between items-center">
                 <span class="font-medium">1. 开场对阵 (Intro / 比赛列表)</span>
                 <!-- Round selector for URL -->
                 <div class="flex items-center gap-1">
-                  <span class="text-[10px] text-muted-foreground">轮次:</span>
+                  <span class="text-[11px] text-muted-foreground">轮次:</span>
                   <select
-                    class="h-5 rounded border border-input bg-background px-1 text-[10px]"
+                    class="h-5 rounded border border-input bg-background px-1 text-[11px]"
                     bind:value={obsIntroRound}
                   >
                     {#each Array.from({length: Math.max(...(tournament?.matches?.map(m => m.round) || [1]))}, (_, i) => i + 1).reverse() as r}
@@ -2597,7 +2832,7 @@
                 <input
                   type="text"
                   readonly
-                  class="flex-1 h-7 px-2 border border-input rounded bg-muted/30 text-[10px] select-all cursor-default"
+                  class="flex-1 h-7 px-2 border border-input rounded bg-muted/30 text-[11px] select-all cursor-default"
                   value={window.location.origin + `/tournament/${tid}/overlay?scene=intro&round=${obsIntroRound}`}
                 />
                 <Button
@@ -2620,7 +2855,7 @@
                 <input
                   type="text"
                   readonly
-                  class="flex-1 h-7 px-2 border border-input rounded bg-muted/30 text-[10px] select-all cursor-default"
+                  class="flex-1 h-7 px-2 border border-input rounded bg-muted/30 text-[11px] select-all cursor-default"
                   value={window.location.origin + `/tournament/${tid}/overlay?scene=ingame`}
                 />
                 <Button
@@ -2643,7 +2878,7 @@
                 <input
                   type="text"
                   readonly
-                  class="flex-1 h-7 px-2 border border-input rounded bg-muted/30 text-[10px] select-all cursor-default"
+                  class="flex-1 h-7 px-2 border border-input rounded bg-muted/30 text-[11px] select-all cursor-default"
                   value={window.location.origin + `/tournament/${tid}/overlay?scene=intermission`}
                 />
                 <Button
@@ -2661,6 +2896,9 @@
             </div>
           </div>
         </div>
+            </Accordion.Content>
+          </Accordion.Item>
+        </Accordion.Root>
       </Card.Content>
     </Card.Root>
   {/snippet}
@@ -2735,7 +2973,7 @@
         <div
           class="flex flex-wrap items-center gap-2 px-3 sm:px-6 pt-4"
         >
-          <Badge variant="outline" class="text-[10px] font-mono">
+          <Badge variant="outline" class="text-[11px] font-mono">
             第 {bracketSectionIndex + 1} / {sectionCount} 组 · {sectionFirstMatches * 2} 人
           </Badge>
           <Button
@@ -2746,7 +2984,7 @@
               bracketViewMode = "sections";
               bracketSectionIndex = Math.max(0, bracketSectionIndex - 1);
             }}
-            class="h-7 text-[10px] px-2"
+            class="h-7 text-[11px] px-2"
           >
             上一组
           </Button>
@@ -2758,7 +2996,7 @@
               bracketViewMode = "sections";
               bracketSectionIndex = Math.min(sectionCount - 1, bracketSectionIndex + 1);
             }}
-            class="h-7 text-[10px] px-2"
+            class="h-7 text-[11px] px-2"
           >
             下一组
           </Button>
@@ -2766,7 +3004,7 @@
             variant={showFinalStage ? "default" : "outline"}
             size="sm"
             onclick={() => (bracketViewMode = "final")}
-            class="h-7 text-[10px] px-2"
+            class="h-7 text-[11px] px-2"
           >
             决赛阶段
           </Button>
@@ -2774,11 +3012,11 @@
             variant={showFinalStage ? "outline" : "default"}
             size="sm"
             onclick={() => (bracketViewMode = "sections")}
-            class="h-7 text-[10px] px-2"
+            class="h-7 text-[11px] px-2"
           >
             分组
           </Button>
-          <span class="text-[10px] text-muted-foreground/70">
+          <span class="text-[11px] text-muted-foreground/70">
             手机每 16 人一组，桌面每 32 人一组
           </span>
         </div>
@@ -2806,12 +3044,20 @@
                     {@const isBye = m.status === "completed" && m.winner_id && (!m.player1_id || !m.player2_id)}
                     {@const p1 = tournament.players?.find(p => p.id === m.player1_id)}
                     {@const p2 = tournament.players?.find(p => p.id === m.player2_id)}
+                    {@const p1Pick = m.p1_pick_race || p1?.race || m.p1_race || null}
+                    {@const p1Play = m.p1_play_race || p1?.play_race || m.p1_race || p1Pick}
+                    {@const p2Pick = m.p2_pick_race || p2?.race || m.p2_race || null}
+                    {@const p2Play = m.p2_play_race || p2?.play_race || m.p2_race || p2Pick}
 
                     <div class="absolute left-0 w-full" style="top: {pos.top}px; height: {pos.height}px;">
                       {#if isBye}
                         <!-- Bye Card (Hidden from view but occupies layout space) -->
                         <div class="w-full h-full border border-transparent bg-transparent select-none pointer-events-none opacity-0"></div>
                       {:else}
+                        <!-- Recommended order (Challonge style) -->
+                        <span class="absolute -left-2.5 top-1/2 z-10 -translate-y-1/2 rounded border border-neutral-300 bg-white px-1 py-0.5 font-mono text-[11px] font-bold text-neutral-500 shadow-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400">
+                          {matchOrder.get(m.id)}
+                        </span>
                         <!-- Normal Match Card -->
                         {@const isClickable = bothPlayersReady && ["in_progress", "completed"].includes(tournament.status)}
                         <div
@@ -2825,7 +3071,7 @@
                         >
                           <!-- Tiny Header Bar -->
                           <div class="px-2 py-1 bg-neutral-100 dark:bg-neutral-900 text-[8px] font-mono text-neutral-500 dark:text-neutral-400 flex items-center justify-between border-b border-neutral-200 dark:border-neutral-800/80 shrink-0">
-                            <span>#{matchOrder.get(m.id)} · 场次 {m.position}</span>
+                            <span>场次 {m.position}</span>
                             <div class="flex items-center gap-1.5">
                               {#if isPlayable}
                                 {@const isActive = tournament.active_match_id === m.id}
@@ -2853,16 +3099,37 @@
 
                           <!-- Player 1 Row -->
                           <div class="flex items-center justify-between w-full h-6 border-b border-neutral-200/50 dark:border-neutral-900/40 transition-colors
-                            {getPlayerRowBgClass(m.player1_id, p1?.race)}">
+                            {getPlayerRowBgClass(m.player1_id, p1Pick)}">
                             <div class="flex items-center gap-1.5 pl-1.5 truncate flex-1 min-w-0 h-full py-0">
+                              <span class="w-4 shrink-0 text-right font-mono text-[11px] text-neutral-400 dark:text-neutral-500">{p1?.seed ?? ""}</span>
                               <span class="truncate font-semibold flex items-center gap-0.5 text-[10.5px]
                                 {m.winner_id === m.player1_id ? 'text-black dark:text-white font-black' : 'text-neutral-700 dark:text-neutral-300'}
                                 {!m.player1_id ? 'text-neutral-400 dark:text-neutral-500/80' : ''}"
                               >
+                                {#if m.player1_id}
+                                  <RaceIcon race={p1Pick} size={11} />
+                                  {#if p1Pick === "R" && p1Play && p1Play !== "R"}
+                                    <RaceIcon race={p1Play} size={10} />
+                                  {/if}
+                                {/if}
                                 {#if m.winner_id === m.player1_id && m.winner_id}
                                   <CrownIcon class="w-2.5 h-2.5 text-amber-500 dark:text-amber-400 shrink-0" />
                                 {/if}
-                                <span class="truncate">{playerName(m.player1_id, m)}</span>
+                                {#if m.player1_id}
+                                  <button
+                                    type="button"
+                                    onclick={(e) => {
+                                      e.stopPropagation();
+                                      openPlayerDetail(m.player1_id);
+                                    }}
+                                    class="truncate text-left hover:text-primary hover:underline cursor-pointer"
+                                    title="查看选手详情"
+                                  >
+                                    {playerName(m.player1_id, m)}
+                                  </button>
+                                {:else}
+                                  <span class="truncate">{playerName(m.player1_id, m)}</span>
+                                {/if}
                               </span>
                             </div>
                             <!-- Score -->
@@ -2876,16 +3143,37 @@
 
                           <!-- Player 2 Row -->
                           <div class="flex items-center justify-between w-full h-6 transition-colors
-                            {getPlayerRowBgClass(m.player2_id, p2?.race)}">
+                            {getPlayerRowBgClass(m.player2_id, p2Pick)}">
                             <div class="flex items-center gap-1.5 pl-1.5 truncate flex-1 min-w-0 h-full py-0">
+                              <span class="w-4 shrink-0 text-right font-mono text-[11px] text-neutral-400 dark:text-neutral-500">{p2?.seed ?? ""}</span>
                               <span class="truncate font-semibold flex items-center gap-0.5 text-[10.5px]
                                 {m.winner_id === m.player2_id ? 'text-black dark:text-white font-black' : 'text-neutral-700 dark:text-neutral-300'}
                                 {!m.player2_id ? 'text-neutral-400 dark:text-neutral-500/80' : ''}"
                               >
+                                {#if m.player2_id}
+                                  <RaceIcon race={p2Pick} size={11} />
+                                  {#if p2Pick === "R" && p2Play && p2Play !== "R"}
+                                    <RaceIcon race={p2Play} size={10} />
+                                  {/if}
+                                {/if}
                                 {#if m.winner_id === m.player2_id && m.winner_id}
                                   <CrownIcon class="w-2.5 h-2.5 text-amber-500 dark:text-amber-400 shrink-0" />
                                 {/if}
-                                <span class="truncate">{playerName(m.player2_id, m)}</span>
+                                {#if m.player2_id}
+                                  <button
+                                    type="button"
+                                    onclick={(e) => {
+                                      e.stopPropagation();
+                                      openPlayerDetail(m.player2_id);
+                                    }}
+                                    class="truncate text-left hover:text-primary hover:underline cursor-pointer"
+                                    title="查看选手详情"
+                                  >
+                                    {playerName(m.player2_id, m)}
+                                  </button>
+                                {:else}
+                                  <span class="truncate">{playerName(m.player2_id, m)}</span>
+                                {/if}
                               </span>
                             </div>
                             <!-- Score -->
@@ -2973,13 +3261,17 @@
                     {#if thirdPlaceMatch}
                       {@const tp1 = tournament.players?.find(p => p.id === thirdPlaceMatch.player1_id)}
                       {@const tp2 = tournament.players?.find(p => p.id === thirdPlaceMatch.player2_id)}
+                      {@const tp1Pick = thirdPlaceMatch.p1_pick_race || tp1?.race || thirdPlaceMatch.p1_race || null}
+                      {@const tp1Play = thirdPlaceMatch.p1_play_race || tp1?.play_race || thirdPlaceMatch.p1_race || tp1Pick}
+                      {@const tp2Pick = thirdPlaceMatch.p2_pick_race || tp2?.race || thirdPlaceMatch.p2_race || null}
+                      {@const tp2Play = thirdPlaceMatch.p2_play_race || tp2?.play_race || thirdPlaceMatch.p2_race || tp2Pick}
                       {@const gfMatch = r.matches[0]}
                       {#if gfMatch}
                         {@const gfPos = matchPositions.positions[gfMatch.id] || { top: 0, height: 64 }}
                         {@const tpTop = gfPos.top + gfPos.height + 28}
                         
                         <!-- Third Place Match Header -->
-                        <div class="absolute left-0 w-full text-[9px] font-bold text-center text-neutral-500 uppercase tracking-wider h-4 flex items-center justify-center"
+                        <div class="absolute left-0 w-full text-[11px] font-bold text-center text-neutral-500 uppercase tracking-wider h-4 flex items-center justify-center"
                              style="top: {tpTop - 18}px;">
                           三四名决赛
                         </div>
@@ -2999,12 +3291,18 @@
 
                             <!-- Player 1 Row -->
                             <div class="flex items-center justify-between w-full h-6 border-b border-neutral-200/50 dark:border-neutral-900/40 transition-colors
-                              {getPlayerRowBgClass(thirdPlaceMatch.player1_id, tp1?.race)}">
+                              {getPlayerRowBgClass(thirdPlaceMatch.player1_id, tp1Pick)}">
                               <div class="flex items-center gap-1.5 pl-1.5 truncate flex-1 min-w-0 h-full py-0">
                                 <span class="truncate font-semibold flex items-center gap-0.5 text-[10.5px]
                                   {thirdPlaceMatch.winner_id === thirdPlaceMatch.player1_id ? 'text-black dark:text-white font-black' : 'text-neutral-700 dark:text-neutral-300'}
                                   {!thirdPlaceMatch.player1_id ? 'text-neutral-400 dark:text-neutral-500/80' : ''}"
                                 >
+                                  {#if thirdPlaceMatch.player1_id}
+                                    <RaceIcon race={tp1Pick} size={11} />
+                                    {#if tp1Pick === "R" && tp1Play && tp1Play !== "R"}
+                                      <RaceIcon race={tp1Play} size={10} />
+                                    {/if}
+                                  {/if}
                                   {#if thirdPlaceMatch.winner_id === thirdPlaceMatch.player1_id && thirdPlaceMatch.winner_id}
                                     <CrownIcon class="w-2.5 h-2.5 text-amber-500 dark:text-amber-400 shrink-0" />
                                   {/if}
@@ -3021,12 +3319,18 @@
 
                             <!-- Player 2 Row -->
                             <div class="flex items-center justify-between w-full h-6 transition-colors
-                              {getPlayerRowBgClass(thirdPlaceMatch.player2_id, tp2?.race)}">
+                              {getPlayerRowBgClass(thirdPlaceMatch.player2_id, tp2Pick)}">
                               <div class="flex items-center gap-1.5 pl-1.5 truncate flex-1 min-w-0 h-full py-0">
                                 <span class="truncate font-semibold flex items-center gap-0.5 text-[10.5px]
                                   {thirdPlaceMatch.winner_id === thirdPlaceMatch.player2_id ? 'text-black dark:text-white font-black' : 'text-neutral-700 dark:text-neutral-300'}
                                   {!thirdPlaceMatch.player2_id ? 'text-neutral-400 dark:text-neutral-500/80' : ''}"
                                 >
+                                  {#if thirdPlaceMatch.player2_id}
+                                    <RaceIcon race={tp2Pick} size={11} />
+                                    {#if tp2Pick === "R" && tp2Play && tp2Play !== "R"}
+                                      <RaceIcon race={tp2Play} size={10} />
+                                    {/if}
+                                  {/if}
                                   {#if thirdPlaceMatch.winner_id === thirdPlaceMatch.player2_id && thirdPlaceMatch.winner_id}
                                     <CrownIcon class="w-2.5 h-2.5 text-amber-500 dark:text-amber-400 shrink-0" />
                                   {/if}
@@ -3117,7 +3421,7 @@
           {/if}
           <Badge
             variant="outline"
-            class="text-[10px] px-2 py-0.5 font-bold uppercase tracking-wider bg-primary/10 text-primary border-primary/20"
+            class="text-[11px] px-2 py-0.5 font-bold uppercase tracking-wider bg-primary/10 text-primary border-primary/20"
           >
             {statusLabel(tournament.status)}
           </Badge>
@@ -3139,11 +3443,11 @@
             value={tournament.scheduled_time}
             status={tournament.status}
           >
-            {#snippet actions()}
+{#snippet actions()}
               <a
                 href={`/api/tournaments/${encodeURIComponent(tournament.id)}/calendar.ics`}
                 download={`${tournament.id}.ics`}
-                class="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border border-primary/25 bg-background/50 text-[10px] font-bold text-primary hover:bg-primary hover:text-primary-foreground transition-colors"
+                class="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border border-primary/25 bg-background/50 text-[11px] font-bold text-primary hover:bg-primary hover:text-primary-foreground transition-colors"
                 title="下载 .ics 日历文件，一键导入日历"
               >
                 <CalendarIcon class="w-3 h-3" />
@@ -3237,7 +3541,7 @@
           : 'text-muted-foreground'}"
       >
         <div
-          class="w-6 h-6 rounded-full mx-auto flex items-center justify-center text-[10px] border {tournament.status ===
+          class="w-6 h-6 rounded-full mx-auto flex items-center justify-center text-[11px] border {tournament.status ===
           'voting'
             ? 'bg-purple-500 text-white border-purple-500'
             : 'bg-muted/40 border-border'}"
@@ -3252,7 +3556,7 @@
           : 'text-muted-foreground'}"
       >
         <div
-          class="w-6 h-6 rounded-full mx-auto flex items-center justify-center text-[10px] border {tournament.status ===
+          class="w-6 h-6 rounded-full mx-auto flex items-center justify-center text-[11px] border {tournament.status ===
           'registration'
             ? 'bg-primary text-black border-primary'
             : 'bg-muted/40 border-border'}"
@@ -3267,7 +3571,7 @@
           : 'text-muted-foreground'}"
       >
         <div
-          class="w-6 h-6 rounded-full mx-auto flex items-center justify-center text-[10px] border {tournament.status ===
+          class="w-6 h-6 rounded-full mx-auto flex items-center justify-center text-[11px] border {tournament.status ===
           'in_progress'
             ? 'bg-amber-500 text-black border-amber-500'
             : 'bg-muted/40 border-border'}"
@@ -3282,7 +3586,7 @@
           : 'text-muted-foreground'}"
       >
         <div
-          class="w-6 h-6 rounded-full mx-auto flex items-center justify-center text-[10px] border {tournament.status ===
+          class="w-6 h-6 rounded-full mx-auto flex items-center justify-center text-[11px] border {tournament.status ===
           'completed'
             ? 'bg-emerald-500 text-black border-emerald-500'
             : 'bg-muted/40 border-border'}"
@@ -3367,7 +3671,7 @@
                       <p class="text-xs text-muted-foreground">
                         未关联 Gamer ID
                       </p>
-                      <p class="text-[10px] text-muted-foreground/80 mt-0.5">
+                      <p class="text-[11px] text-muted-foreground/80 mt-0.5">
                         请先关联或在右侧输入框注册
                       </p>
                     </div>
@@ -3392,108 +3696,132 @@
                   class="text-xs font-bold text-muted-foreground"
                   >管理员手动为群友报名</label
                 >
-                <div class="flex gap-2">
-                  <Input
-                    id="reg-id-input"
-                    bind:value={regInput}
-                    placeholder="输入群友 ID，如 ZergKing"
-                    class="bg-background border-border text-foreground flex-1 h-9 text-xs"
-                  />
+                <div class="flex flex-col sm:flex-row gap-2">
+                  <div
+                    class="flex min-h-9 flex-1 flex-wrap items-center gap-1.5 rounded-md border border-input bg-background px-2 py-1.5 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/30"
+                    onclick={() =>
+                      document.getElementById("reg-id-input")?.focus()}
+                  >
+                    {#each selectedRegIds as id (id)}
+                      <span
+                        class="inline-flex items-center gap-1 rounded bg-sky-600 px-2 py-0.5 text-[11px] font-bold text-white"
+                      >
+                        {id}
+                        <button
+                          type="button"
+                          onclick={(e) => {
+                            e.stopPropagation();
+                            removeRegChip(id);
+                          }}
+                          class="cursor-pointer text-white/80 hover:text-white"
+                          aria-label={`移除 ${id}`}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    {/each}
+                    <input
+                      id="reg-id-input"
+                      bind:value={regInput}
+                      placeholder={selectedRegIds.length
+                        ? "继续输入，按 Enter 添加…"
+                        : "输入群友 ID，按 Enter 添加"}
+                      class="h-6 min-w-24 flex-1 bg-transparent px-1 text-xs text-foreground outline-none placeholder:text-muted-foreground"
+                      onkeydown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          addRegChip(regInput);
+                        } else if (
+                          e.key === "Backspace" &&
+                          !regInput &&
+                          selectedRegIds.length > 0
+                        ) {
+                          removeRegChip(selectedRegIds[selectedRegIds.length - 1]);
+                        }
+                      }}
+                    />
+                  </div>
                   <Button
                     variant="secondary"
                     size="sm"
-                    onclick={doRegister}
-                    class="text-xs h-9 cursor-pointer"
+                    onclick={submitRegChips}
+                    class="text-xs h-9 cursor-pointer shrink-0"
                   >
-                    添加选手
+                    添加选手{selectedRegIds.length
+                      ? ` (${selectedRegIds.length})`
+                      : ""}
                   </Button>
+                </div>
+                <div
+                  class="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground"
+                >
+                  <span>点下方 ID 加入上方标签；Enter 添加，× 移除。</span>
+                  <span>已选 {selectedRegIds.length} 人</span>
                 </div>
 
                 {#if unregisteredPlayers.length > 0}
                   <div class="space-y-2 pt-1">
-                    <div
-                      class="flex flex-wrap items-center justify-between gap-2"
-                    >
-                      <span class="text-[10px] font-bold text-muted-foreground">
-                        多选选手批量报名（默认只显示一年内活跃）
-                      </span>
-                      {#if selectedRegIds.length > 0}
-                        <div class="flex items-center gap-1.5">
-                          <Button
-                            size="sm"
-                            onclick={doBatchRegister}
-                            class="h-7 text-[10px] px-2"
-                          >
-                            批量报名 ({selectedRegIds.length})
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onclick={() => (selectedRegIds = [])}
-                            class="h-7 text-[10px] px-2"
-                          >
-                            清空
-                          </Button>
-                        </div>
-                      {/if}
-                    </div>
+                    <span class="text-[11px] font-bold text-muted-foreground">
+                      快捷选择（默认只显示一年内有对局）
+                    </span>
                     <div
                       class="flex flex-wrap gap-1.5 max-h-30 overflow-y-auto pr-1"
                     >
                       {#each activeUnregistered as p}
                         <button
                           type="button"
-                          onclick={() => toggleRegSelection(p.id)}
-                          title={p.last_seen_at
-                            ? `最近活跃: ${new Date(p.last_seen_at).toLocaleDateString("zh-CN")}`
-                            : "无登录记录"}
-                          class="text-[10px] px-2 py-0.5 rounded border transition-colors cursor-pointer {selectedRegIds.includes(
+                          onclick={() => addRegChip(p.id)}
+                          title={activityLabel(p)}
+                          class="text-[11px] px-2 py-0.5 rounded border transition-colors cursor-pointer {selectedRegIds.includes(
                             p.id,
                           )
                             ? 'bg-primary text-primary-foreground border-primary font-bold'
                             : 'bg-muted text-foreground border-border/80 hover:bg-primary/80 hover:text-primary-foreground'}"
                         >
-                          {selectedRegIds.includes(p.id) ? "✓ " : ""}{p.display_name}
+                          {p.display_name}
                         </button>
                       {:else}
                         <span
-                          class="text-[10px] text-muted-foreground/60 italic px-1"
+                          class="text-[11px] text-muted-foreground/60 italic px-1"
                         >
-                          暂无最近一年活跃的未报名选手
+                          暂无最近一年有对局的未报名选手
                         </span>
                       {/each}
                     </div>
                     {#if inactiveUnregistered.length > 0}
-                      <details
-                        class="rounded-lg border border-border/60 bg-muted/20 px-2 py-1.5"
-                        bind:open={showInactiveReg}
+                      <Accordion.Root
+                        type="single"
+                        collapsible
+                        class="rounded-lg border border-border/60 bg-muted/20 px-2"
                       >
-                        <summary
-                          class="text-[10px] text-muted-foreground cursor-pointer select-none"
-                        >
-                          显示一年未登录的选手（{inactiveUnregistered.length}）
-                        </summary>
-                        <div
-                          class="flex flex-wrap gap-1.5 max-h-25 overflow-y-auto pr-1 mt-1.5"
-                        >
-                          {#each inactiveUnregistered as p}
-                            <button
-                              type="button"
-                              onclick={() => toggleRegSelection(p.id)}
-                              title={p.last_seen_at
-                                ? `最近活跃: ${new Date(p.last_seen_at).toLocaleDateString("zh-CN")}`
-                                : "无登录记录"}
-                              class="text-[10px] px-2 py-0.5 rounded border transition-colors cursor-pointer {selectedRegIds.includes(
-                                p.id,
-                              )
-                                ? 'bg-primary text-primary-foreground border-primary font-bold'
-                                : 'bg-muted/70 text-muted-foreground border-border/80 hover:bg-primary/80 hover:text-primary-foreground'}"
+                        <Accordion.Item value="inactive">
+                          <Accordion.Trigger
+                            class="py-1.5 text-[11px] font-normal text-muted-foreground hover:no-underline"
+                          >
+                            显示一年内无对局的选手（{inactiveUnregistered.length}）
+                          </Accordion.Trigger>
+                          <Accordion.Content class="pt-0 pb-1.5">
+                            <div
+                              class="flex flex-wrap gap-1.5 max-h-25 overflow-y-auto pr-1"
                             >
-                              {selectedRegIds.includes(p.id) ? "✓ " : ""}{p.display_name}
-                            </button>
-                          {/each}
-                        </div>
-                      </details>
+                              {#each inactiveUnregistered as p}
+                                <button
+                                  type="button"
+                                  onclick={() => addRegChip(p.id)}
+                                  title={activityLabel(p)}
+                                  class="text-[11px] px-2 py-0.5 rounded border transition-colors cursor-pointer {selectedRegIds.includes(
+                                    p.id,
+                                  )
+                                    ? 'bg-primary text-primary-foreground border-primary font-bold'
+                                    : 'bg-muted/70 text-muted-foreground border-border/80 hover:bg-primary/80 hover:text-primary-foreground'}"
+                                >
+                                  {p.display_name}
+                                </button>
+                              {/each}
+                            </div>
+                          </Accordion.Content>
+                        </Accordion.Item>
+                      </Accordion.Root>
                     {/if}
                   </div>
                 {/if}
@@ -3513,10 +3841,13 @@
                     种子排序配置
                   </Card.Title>
                   <Card.Description class="text-xs">
-                    默认按天梯 MMR 自动排序：高种子在前，空出的轮次优先轮空高种子。手动调整或随机微调后会切换为手动模式。
+                    {tournament.loser_advances
+                      ? "败者晋级：按天梯 MMR 从低到高排序，MMR 最低者为种子 1 并优先轮空。"
+                      : "胜者晋级：按天梯 MMR 从高到低排序，MMR 最高者为种子 1 并优先轮空。"}
+                    手动调整或随机微调后会切换为手动模式。
                   </Card.Description>
                   <div class="mt-2">
-                    <Badge variant="outline" class="text-[9px] px-1.5 py-0 uppercase tracking-wider
+                    <Badge variant="outline" class="text-[11px] px-1.5 py-0 uppercase tracking-wider
                       {tournament.seed_mode === 'manual'
                         ? 'border-amber-500/30 bg-amber-500/10 text-amber-500'
                         : 'border-primary/30 bg-primary/10 text-primary'}">
@@ -3531,7 +3862,7 @@
                     variant="outline"
                     size="sm"
                     onclick={autoSeed}
-                    class="h-7 text-[10px] cursor-pointer gap-1"
+                    class="h-7 text-[11px] cursor-pointer gap-1"
                   >
                     <RefreshCwIcon class="w-3 h-3" />
                     按天梯分重排
@@ -3540,12 +3871,12 @@
                     variant="outline"
                     size="sm"
                     onclick={randomizeSeed}
-                    class="h-7 text-[10px] cursor-pointer gap-1"
+                    class="h-7 text-[11px] cursor-pointer gap-1"
                   >
                     <ShuffleIcon class="w-3 h-3" />
                     随机微调
                   </Button>
-                  <span class="text-[10px] text-muted-foreground">
+                  <span class="text-[11px] text-muted-foreground">
                     随机只打乱 MMR 相近的选手，前 2 / 后 2 名不动
                   </span>
                 </div>
@@ -3561,12 +3892,12 @@
                       <div class="flex-1 min-w-0">
                         <div class="font-semibold truncate">{playerName(pid)}</div>
                         <div class="flex items-center gap-1.5 mt-0.5">
-                          <TierBadge tier={p?.ladder_tier} className="text-[9px]" />
-                          <span class="text-[9px] font-mono text-muted-foreground">
+                          <TierBadge tier={p?.ladder_tier} className="text-[11px]" />
+                          <span class="text-[11px] font-mono text-muted-foreground">
                             {p?.ladder_mmr ?? 3000} MMR · {p?.ladder_games ?? 0} 场
                           </span>
                           {#if p?.ladder_active === false}
-                            <span class="text-[9px] text-amber-500/80">不活跃</span>
+                            <span class="text-[11px] text-amber-500/80">不活跃</span>
                           {/if}
                         </div>
                       </div>
@@ -3631,7 +3962,7 @@
                   variant="outline"
                   size="sm"
                   onclick={postponeVoteWeek}
-                  class="h-7 text-[10px] px-2"
+                  class="h-7 text-[11px] px-2"
                 >
                   顺延一周推荐
                 </Button>
@@ -3640,15 +3971,15 @@
                     variant="ghost"
                     size="sm"
                     onclick={() => (voteWeekOffset = 0)}
-                    class="h-7 text-[10px] px-2"
+                    class="h-7 text-[11px] px-2"
                   >
                     回到本周
                   </Button>
-                  <span class="text-[10px] text-amber-500 font-bold">
+                  <span class="text-[11px] text-amber-500 font-bold">
                     已顺延 {voteWeekOffset} 周
                   </span>
                 {/if}
-                <span class="text-[10px] text-muted-foreground/60">
+                <span class="text-[11px] text-muted-foreground/60">
                   顺延会作废已过期投票；未过期选项保留
                 </span>
               </div>
@@ -3692,12 +4023,12 @@
                               </span>
                               <div class="flex items-center gap-1.5">
                                 {#if opt.suggested}
-                                  <Badge variant="outline" class="text-[8px] px-1 py-0 text-purple-400 border-purple-500/30">推荐</Badge>
+                                  <Badge variant="outline" class="text-[11px] px-1 py-0 text-purple-400 border-purple-500/30">推荐</Badge>
                                 {/if}
                                 {#if voted}
-                                  <Badge class="bg-purple-500 text-white font-bold hover:bg-purple-500 text-[9px] px-1 py-0 shadow">已投</Badge>
+                                  <Badge class="bg-purple-500 text-white font-bold hover:bg-purple-500 text-[11px] px-1 py-0 shadow">已投</Badge>
                                 {/if}
-                                <span class="bg-primary text-primary-foreground text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center shadow">
+                                <span class="bg-primary text-primary-foreground text-[11px] font-bold rounded-full w-5 h-5 flex items-center justify-center shadow">
                                   {opt.count}
                                 </span>
                               </div>
@@ -3706,7 +4037,7 @@
                             <!-- Voters -->
                             <div class="flex flex-wrap gap-1 mt-2.5 border-t border-border/40 pt-2 w-full">
                               {#each opt.voters as voter}
-                                <span class="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/40 font-medium">
+                                <span class="text-[11px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/40 font-medium">
                                   {playerName(voter.player_id)}
                                 </span>
                               {/each}
@@ -3761,18 +4092,18 @@
                         </span>
                         <div class="flex items-center gap-1.5">
                           {#if voted}
-                            <Badge class="bg-purple-500 text-white font-bold hover:bg-purple-500 text-[9px] px-1 py-0 shadow">
+                            <Badge class="bg-purple-500 text-white font-bold hover:bg-purple-500 text-[11px] px-1 py-0 shadow">
                               已投票
                             </Badge>
                           {/if}
-                          <span class="bg-primary text-primary-foreground text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center shadow">
+                          <span class="bg-primary text-primary-foreground text-[11px] font-bold rounded-full w-5 h-5 flex items-center justify-center shadow">
                             {opt.count}
                           </span>
                         </div>
                       </div>
                       <div class="flex flex-wrap gap-1 mt-3 border-t border-border/50 pt-2 w-full">
                         {#each opt.voters as voter}
-                          <span class="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/40 font-medium">
+                          <span class="text-[11px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground border border-border/40 font-medium">
                             {playerName(voter.player_id)}
                           </span>
                         {/each}
@@ -3802,7 +4133,7 @@
                     class="border border-border bg-background/30 rounded-xl overflow-hidden flex flex-col"
                   >
                     <div
-                      class="p-3 border-b border-border/40 bg-muted/5 flex items-center justify-between text-[10px] font-bold text-muted-foreground"
+                      class="p-3 border-b border-border/40 bg-muted/5 flex items-center justify-between text-[11px] font-bold text-muted-foreground"
                     >
                       <span>当前身份: {userState.id}</span>
                       <span class="text-primary">不可代投票</span>
@@ -3820,7 +4151,7 @@
                       class="border-t border-border/60 p-3 max-h-40 overflow-y-auto"
                     >
                       <span
-                        class="text-[9px] text-muted-foreground font-bold uppercase tracking-wider block mb-2"
+                        class="text-[11px] text-muted-foreground font-bold uppercase tracking-wider block mb-2"
                         >选择具体时段</span
                       >
                       <div class="grid grid-cols-3 gap-1.5">
@@ -3895,7 +4226,7 @@
               {#if userState.id}
                 <div class="space-y-3">
                   <div class="space-y-1">
-                    <span class="text-[10px] font-bold text-muted-foreground block">选择投票主题</span>
+                    <span class="text-[11px] font-bold text-muted-foreground block">选择投票主题</span>
                     <select
                       bind:value={customTopicSelect}
                       class="flex h-8 w-full rounded-md border border-input bg-background px-3 py-1 text-xs ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
@@ -3909,7 +4240,7 @@
 
                   {#if customTopicSelect === "new"}
                     <div class="space-y-1 animate-in fade-in slide-in-from-top-1 duration-200">
-                      <span class="text-[10px] font-bold text-muted-foreground block">自定义主题名称</span>
+                      <span class="text-[11px] font-bold text-muted-foreground block">自定义主题名称</span>
                       <Input
                         bind:value={customTopicInput}
                         placeholder="例如: 比赛规则, BP赛制"
@@ -3919,7 +4250,7 @@
                   {/if}
 
                   <div class="space-y-1">
-                    <span class="text-[10px] font-bold text-muted-foreground block">选项内容</span>
+                    <span class="text-[11px] font-bold text-muted-foreground block">选项内容</span>
                     <Input
                       bind:value={customOptionInput}
                       placeholder="例如: 韩服, BO5双败, Neo Sylphid"
@@ -3988,7 +4319,7 @@
                 <div class="p-3 bg-card/60 border border-primary/20 rounded-xl">
                   <CrownIcon class="w-5 h-5 text-amber-400 mx-auto mb-1" />
                   <p
-                    class="text-[10px] text-muted-foreground uppercase tracking-widest font-semibold"
+                    class="text-[11px] text-muted-foreground uppercase tracking-widest font-semibold"
                   >
                     冠军 (Gold)
                   </p>
@@ -3998,12 +4329,12 @@
                 </div>
                 <div class="p-3 bg-card/60 border border-border rounded-xl">
                   <div
-                    class="w-5 h-5 rounded-full bg-zinc-400 text-black text-[10px] font-bold mx-auto mb-1 flex items-center justify-center"
+                    class="w-5 h-5 rounded-full bg-zinc-400 text-black text-[11px] font-bold mx-auto mb-1 flex items-center justify-center"
                   >
                     2
                   </div>
                   <p
-                    class="text-[10px] text-muted-foreground uppercase tracking-widest font-semibold"
+                    class="text-[11px] text-muted-foreground uppercase tracking-widest font-semibold"
                   >
                     亚军 (Silver)
                   </p>
@@ -4058,7 +4389,7 @@
                   >
                     <thead>
                       <tr
-                        class="border-b border-border/50 bg-muted/20 text-[10px] uppercase font-bold text-muted-foreground"
+                        class="border-b border-border/50 bg-muted/20 text-[11px] uppercase font-bold text-muted-foreground"
                       >
                         <th class="py-2.5 px-4 w-40">名次</th>
                         <th class="py-2.5 px-4">选手 (Player)</th>
@@ -4077,14 +4408,14 @@
                             >
                               {#if item.team}
                                 <span
-                                  class="text-[10px] text-muted-foreground font-mono"
+                                  class="text-[11px] text-muted-foreground font-mono"
                                   >[{item.team}]</span
                                 >
                               {/if}
                               <span>{item.display_name || item.id}</span>
                               {#if item.flag}
                                 <span
-                                  class="text-[9px] font-bold px-1 rounded bg-muted text-muted-foreground uppercase font-mono"
+                                  class="text-[11px] font-bold px-1 rounded bg-muted text-muted-foreground uppercase font-mono"
                                   >{item.flag}</span
                                 >
                               {/if}
@@ -4115,6 +4446,32 @@
   </div>
 {/if}
 
+<!-- Player detail dialog (roster + bracket) -->
+<Dialog.Root bind:open={playerDetailOpen}>
+  <Dialog.Content
+    class="sm:max-w-3xl max-h-[85vh] overflow-y-auto p-0"
+  >
+    <Dialog.Header class="sr-only">
+      <Dialog.Title>选手详情</Dialog.Title>
+      <Dialog.Description>选手生涯数据与近期 MMR</Dialog.Description>
+    </Dialog.Header>
+    {#if playerDetailLoading}
+      <div class="py-16 flex flex-col items-center gap-3 text-muted-foreground text-xs">
+        <div class="w-6 h-6 rounded-full border-2 border-primary border-t-transparent animate-spin"></div>
+        正在加载选手详情...
+      </div>
+    {:else if playerDetailPlayer}
+      <div class="p-5">
+        <PlayerDetail player={playerDetailPlayer} />
+      </div>
+    {:else}
+      <div class="py-16 text-center text-xs text-muted-foreground italic">
+        暂无该选手的生涯数据。
+      </div>
+    {/if}
+  </Dialog.Content>
+</Dialog.Root>
+
 <!-- Match Result Submission Dialog -->
 <Dialog.Root bind:open={showMatchDialog}>
   <Dialog.Content class="max-w-95 bg-card border border-border">
@@ -4134,7 +4491,7 @@
           <div
             class="space-y-3 p-4 rounded-xl border border-border bg-background/30"
           >
-            <h4
+<h4
               class="text-xs font-bold text-muted-foreground uppercase tracking-widest text-center"
             >
               填报比分 (BO{bestOf} · {loserAdvances ? "败者晋级" : "胜者晋级"})
@@ -4256,7 +4613,7 @@
             >
               判定游戏获胜方 ({loserAdvances ? "败者晋级" : "胜者晋级"})
             </h4>
-            <p class="text-[10px] text-muted-foreground/85 leading-normal">
+            <p class="text-[11px] text-muted-foreground/85 leading-normal">
               {#if loserAdvances}
                 本比赛为“败者晋级杯赛”，星际2游戏获胜的一方记大分 1
                 分并被淘汰，失败的一方记 0 分并晋级下一轮。请选择本局星际2游戏的<strong
@@ -4297,7 +4654,7 @@
           >
             弃权判定
           </h4>
-          <p class="text-[10px] text-muted-foreground">
+          <p class="text-[11px] text-muted-foreground">
             若某方选手未能按时出席，可直接判定另一方弃权晋级下一轮。
           </p>
           <div class="grid grid-cols-2 gap-2 mt-1">
@@ -4332,7 +4689,7 @@
             >
               回滚比赛结果
             </h4>
-            <p class="text-[10px] text-muted-foreground leading-normal">
+            <p class="text-[11px] text-muted-foreground leading-normal">
               完全清除此场比赛的比分及晋级关系，将其状态重设为“未开始”。
             </p>
             <Button
@@ -4418,7 +4775,7 @@
                 <span>{displayTime}</span>
                 <Badge
                   variant="secondary"
-                  class="bg-primary/20 text-primary font-bold text-[10px]"
+                  class="bg-primary/20 text-primary font-bold text-[11px]"
                 >
                   {opt.count} 票
                 </Badge>
@@ -4460,11 +4817,24 @@
       >
         <span>比赛对局分析与录像</span>
         {#if selectedMatch}
-          <span class="text-xs text-muted-foreground font-mono"
-            >场次 {selectedMatch.position} • {playerName(
-              selectedMatch.player1_id,
-            )} vs {playerName(selectedMatch.player2_id)}</span
-          >
+          {@const smP1Pick = selectedMatch.p1_pick_race || selectedMatch.p1_race || null}
+          {@const smP1Play = selectedMatch.p1_play_race || selectedMatch.p1_race || smP1Pick}
+          {@const smP2Pick = selectedMatch.p2_pick_race || selectedMatch.p2_race || null}
+          {@const smP2Play = selectedMatch.p2_play_race || selectedMatch.p2_race || smP2Pick}
+          <span class="flex items-center gap-1.5 text-xs text-muted-foreground font-mono">
+            <span>场次 {selectedMatch.position} •</span>
+            <RaceIcon race={smP1Pick} size={13} />
+            {#if smP1Pick === "R" && smP1Play && smP1Play !== "R"}
+              <RaceIcon race={smP1Play} size={11} />
+            {/if}
+            <span>{playerName(selectedMatch.player1_id)}</span>
+            <span class="text-muted-foreground/70">vs</span>
+            <RaceIcon race={smP2Pick} size={13} />
+            {#if smP2Pick === "R" && smP2Play && smP2Play !== "R"}
+              <RaceIcon race={smP2Play} size={11} />
+            {/if}
+            <span>{playerName(selectedMatch.player2_id)}</span>
+          </span>
         {/if}
       </Dialog.Title>
     </Dialog.Header>
@@ -4490,7 +4860,7 @@
               >录像场次</span
             >
             <span
-              class="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-mono font-bold"
+              class="text-[11px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-mono font-bold"
               >{matchReplays.length} 局</span
             >
           </div>
@@ -4508,7 +4878,7 @@
                   : 'bg-background/40 border-border hover:bg-background/80 text-foreground'}"
               >
                 <span class="truncate block font-semibold">Game {idx + 1}</span>
-                <span class="text-[9px] text-muted-foreground truncate"
+                <span class="text-[11px] text-muted-foreground truncate"
                   >{rep.map_name || "未知地图"}</span
                 >
               </button>
@@ -4542,17 +4912,17 @@
                 <div
                   class="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin"
                 ></div>
-                <span class="text-[10px] text-muted-foreground"
+                <span class="text-[11px] text-muted-foreground"
                   >正在解析并保存...</span
                 >
               {:else}
                 <UploadCloudIcon
                   class="w-6 h-6 text-muted-foreground animate-pulse"
                 />
-                <span class="text-[10px] font-medium text-foreground"
+                <span class="text-[11px] font-medium text-foreground"
                   >点击或拖拽上传</span
                 >
-                <span class="text-[8px] text-muted-foreground"
+                <span class="text-[11px] text-muted-foreground"
                   >仅限 .SC2Replay 格式</span
                 >
               {/if}
@@ -4589,7 +4959,7 @@
                     class="p-3 bg-background/50 border border-border rounded-xl"
                   >
                     <p
-                      class="text-[10px] text-muted-foreground uppercase font-bold tracking-wider"
+                      class="text-[11px] text-muted-foreground uppercase font-bold tracking-wider"
                     >
                       地图
                     </p>
@@ -4601,7 +4971,7 @@
                     class="p-3 bg-background/50 border border-border rounded-xl"
                   >
                     <p
-                      class="text-[10px] text-muted-foreground uppercase font-bold tracking-wider"
+                      class="text-[11px] text-muted-foreground uppercase font-bold tracking-wider"
                     >
                       游戏时长
                     </p>
@@ -4613,11 +4983,11 @@
                     class="p-3 bg-background/50 border border-border rounded-xl"
                   >
                     <p
-                      class="text-[10px] text-muted-foreground uppercase font-bold tracking-wider"
+                      class="text-[11px] text-muted-foreground uppercase font-bold tracking-wider"
                     >
                       对局时间
                     </p>
-                    <p class="text-[10px] font-bold mt-1 text-foreground leading-tight truncate" title={formatReplayTime(selectedReplay.parsed_data?.start_time)}>
+                    <p class="text-[11px] font-bold mt-1 text-foreground leading-tight truncate" title={formatReplayTime(selectedReplay.parsed_data?.start_time)}>
                       {formatReplayTime(selectedReplay.parsed_data?.start_time)}
                     </p>
                   </div>
@@ -4627,7 +4997,7 @@
                   class="border border-border rounded-xl overflow-hidden bg-background/30"
                 >
                   <div
-                    class="p-2.5 bg-muted/20 border-b border-border/40 text-[10px] font-bold text-muted-foreground uppercase tracking-wider"
+                    class="p-2.5 bg-muted/20 border-b border-border/40 text-[11px] font-bold text-muted-foreground uppercase tracking-wider"
                   >
                     对局结果
                   </div>
@@ -4642,23 +5012,23 @@
                         >
                           <span class="font-semibold flex items-center gap-1.5">
                             <span
-                              class="w-4 h-4 rounded-full bg-linear-to-br from-primary to-indigo-600 flex items-center justify-center text-[8px] font-bold text-white uppercase"
+                              class="w-4 h-4 rounded-full bg-linear-to-br from-primary to-indigo-600 flex items-center justify-center text-[11px] font-bold text-white uppercase"
                               >{player.name.slice(0, 1)}</span
                             >
                             {player.name}
                             <Badge
                               variant="outline"
-                              class="text-[9px] px-1 py-0 border-primary/20 uppercase tracking-wider"
+                              class="text-[11px] px-1 py-0 border-primary/20 uppercase tracking-wider"
                               >{player.race}</Badge
                             >
                           </span>
                           {#if selectedReplay.winner === player.name}
                             <Badge
-                              class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[9px] font-bold"
+                              class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[11px] font-bold"
                               >WINNER</Badge
                             >
                           {:else}
-                            <span class="text-[10px] text-muted-foreground"
+                            <span class="text-[11px] text-muted-foreground"
                               >LOSS</span
                             >
                           {/if}
@@ -4710,12 +5080,12 @@
                       >
                       <Badge
                         variant="outline"
-                        class="text-[9px] uppercase tracking-wider shrink-0"
+                        class="text-[11px] uppercase tracking-wider shrink-0"
                         >{player?.race || "?"}</Badge
                       >
                     </div>
                     <div
-                      class="space-y-1.5 overflow-y-auto max-h-55 text-[10px] pr-1"
+                      class="space-y-1.5 overflow-y-auto max-h-55 text-[11px] pr-1"
                     >
                       {#each (player?.build_order || []).filter((item) => !item.is_worker) as bo}
                         <div
@@ -4750,7 +5120,7 @@
             {:else if activeReplayTab === "curves"}
               <div class="space-y-3 pt-1 flex-1 flex flex-col justify-between">
                 <div
-                  class="flex items-center justify-between text-[10px] text-muted-foreground font-semibold"
+                  class="flex items-center justify-between text-[11px] text-muted-foreground font-semibold"
                 >
                   <span>横轴：时间 (分钟) • 纵轴：农民数 (人)</span>
                   <div class="flex gap-3">
@@ -4895,7 +5265,7 @@
                 <h4 class="text-xs font-bold text-foreground">
                   未关联任何录像
                 </h4>
-                <p class="text-[10px] text-muted-foreground mt-0.5">
+                <p class="text-[11px] text-muted-foreground mt-0.5">
                   请通过左侧面板的上传入口上传此场比赛的 `.SC2Replay`
                   录像文件进行入库。
                 </p>
@@ -4973,7 +5343,7 @@
           <textarea
             readonly
             value={generatedWikiText}
-            class="w-full h-64 bg-background border border-border rounded-xl p-3 text-[10px] font-mono text-foreground focus-visible:outline-none resize-none"
+            class="w-full h-64 bg-background border border-border rounded-xl p-3 text-[11px] font-mono text-foreground focus-visible:outline-none resize-none"
           ></textarea>
         </div>
 
@@ -5043,10 +5413,10 @@
           <!-- CN Server -->
           <div class="space-y-1.5">
             <span
-              class="text-[10px] font-bold text-muted-foreground flex items-center justify-between"
+              class="text-[11px] font-bold text-muted-foreground flex items-center justify-between"
             >
               <span>中国服务器 (CN)</span>
-              <span class="text-[9px] text-muted-foreground/60 font-normal"
+              <span class="text-[11px] text-muted-foreground/60 font-normal"
                 >已添加 {editPlayerBattleTags.cn.length} 个</span
               >
             </span>
@@ -5056,7 +5426,7 @@
               {#each editPlayerBattleTags.cn as tag, idx}
                 <Badge
                   variant="secondary"
-                  class="text-[9px] font-mono py-0 px-1.5 bg-muted border border-border/80 text-foreground flex items-center gap-1"
+                  class="text-[11px] font-mono py-0 px-1.5 bg-muted border border-border/80 text-foreground flex items-center gap-1"
                 >
                   {tag}
                   <button
@@ -5072,7 +5442,7 @@
               {/each}
               {#if editPlayerBattleTags.cn.length === 0}
                 <span
-                  class="text-[9px] text-muted-foreground/50 italic self-center px-1"
+                  class="text-[11px] text-muted-foreground/50 italic self-center px-1"
                   >暂无账号</span
                 >
               {/if}
@@ -5119,10 +5489,10 @@
           <!-- Global Server -->
           <div class="space-y-1.5">
             <span
-              class="text-[10px] font-bold text-muted-foreground flex items-center justify-between"
+              class="text-[11px] font-bold text-muted-foreground flex items-center justify-between"
             >
               <span>国际服务器 (Global)</span>
-              <span class="text-[9px] text-muted-foreground/60 font-normal"
+              <span class="text-[11px] text-muted-foreground/60 font-normal"
                 >已添加 {editPlayerBattleTags.global.length} 个</span
               >
             </span>
@@ -5132,7 +5502,7 @@
               {#each editPlayerBattleTags.global as tag, idx}
                 <Badge
                   variant="secondary"
-                  class="text-[9px] font-mono py-0 px-1.5 bg-muted border border-border/80 text-foreground flex items-center gap-1"
+                  class="text-[11px] font-mono py-0 px-1.5 bg-muted border border-border/80 text-foreground flex items-center gap-1"
                 >
                   {tag}
                   <button
@@ -5149,7 +5519,7 @@
               {/each}
               {#if editPlayerBattleTags.global.length === 0}
                 <span
-                  class="text-[9px] text-muted-foreground/50 italic self-center px-1"
+                  class="text-[11px] text-muted-foreground/50 italic self-center px-1"
                   >暂无账号</span
                 >
               {/if}
@@ -5265,12 +5635,12 @@
           {/each}
           {#if editPlayerBnetIds.length === 0}
             <span
-              class="text-[10px] text-muted-foreground/60 italic self-center px-1"
+              class="text-[11px] text-muted-foreground/60 italic self-center px-1"
               >暂无关联的游戏账号（将通过录像上传自动匹配并关联）</span
             >
           {/if}
         </div>
-        <p class="text-[10px] text-muted-foreground/60">
+        <p class="text-[11px] text-muted-foreground/60">
           此处为全局账号；仅在某届赛事临时使用的账号请到该赛事的「账号关联」里管理。
         </p>
       </div>
@@ -5286,7 +5656,7 @@
           placeholder="例如: User:Bnet"
           class="bg-background border-border text-foreground text-xs"
         />
-        <p class="text-[10px] text-muted-foreground/60">
+        <p class="text-[11px] text-muted-foreground/60">
           Liquipedia Wiki 页面名称，最终将链接至
           https://liquipedia.net/starcraft2/&lt;名称&gt;
         </p>
@@ -5351,7 +5721,7 @@
                 ? `${p.display_name} (${p.id})`
                 : p.id}
             </div>
-            <Badge variant="secondary" class="text-[10px] font-mono shrink-0"
+            <Badge variant="secondary" class="text-[11px] font-mono shrink-0"
               >{p.race || "U"}</Badge
             >
           </div>
@@ -5365,9 +5735,9 @@
                 {@const gName = typeof g === "string" ? g : g.id || ""}
                 {@const gUrl = typeof g === "object" ? g.url : ""}
                 <span
-                  class="inline-flex items-center gap-1 text-[10px] font-mono bg-muted/60 border border-border/60 rounded-md pl-1.5 pr-1 py-0.5"
+                  class="inline-flex items-center gap-1 text-[11px] font-mono bg-muted/60 border border-border/60 rounded-md pl-1.5 pr-1 py-0.5"
                 >
-                  <span class="text-[9px] text-emerald-500 font-bold">全局</span>
+                  <span class="text-[11px] text-emerald-500 font-bold">全局</span>
                   {#if gUrl}
                     <a
                       href={gUrl}
@@ -5388,7 +5758,7 @@
                     disabled={accountsBusy}
                     onclick={() => makeTemporary(p.id, g)}
                     title="解绑全局（只在本次赛事临时保留该账号）"
-                    class="rounded px-1 py-0.5 text-[9px] hover:bg-sky-500/20 hover:text-sky-500 text-muted-foreground disabled:opacity-50 cursor-pointer"
+                    class="rounded px-1 py-0.5 text-[11px] hover:bg-sky-500/20 hover:text-sky-500 text-muted-foreground disabled:opacity-50 cursor-pointer"
                     >解绑全局</button
                   >
                   <button
@@ -5404,9 +5774,9 @@
               {/each}
               {#each scoped as a (a.account_key)}
                 <span
-                  class="inline-flex items-center gap-1 text-[10px] font-mono bg-sky-500/5 border border-sky-500/30 rounded-md pl-1.5 pr-1 py-0.5"
+                  class="inline-flex items-center gap-1 text-[11px] font-mono bg-sky-500/5 border border-sky-500/30 rounded-md pl-1.5 pr-1 py-0.5"
                 >
-                  <span class="text-[9px] text-sky-500 font-bold">临时</span>
+                  <span class="text-[11px] text-sky-500 font-bold">临时</span>
                   {#if a.url}
                     <a
                       href={a.url}
@@ -5428,7 +5798,7 @@
                     disabled={accountsBusy}
                     onclick={() => makePermanent(p.id, a)}
                     title="绑回全局（写入选手全局资料）"
-                    class="rounded px-1 py-0.5 text-[9px] hover:bg-emerald-500/20 hover:text-emerald-500 text-muted-foreground disabled:opacity-50 cursor-pointer"
+                    class="rounded px-1 py-0.5 text-[11px] hover:bg-emerald-500/20 hover:text-emerald-500 text-muted-foreground disabled:opacity-50 cursor-pointer"
                     >绑回全局</button
                   >
                   <button
@@ -5512,14 +5882,14 @@
               {#if acct.race && acct.race !== "?"}
                 <Badge
                   variant="secondary"
-                  class="text-[10px] font-mono bg-muted/65 border border-border/60 px-1.5 py-0 shrink-0"
+                  class="text-[11px] font-mono bg-muted/65 border border-border/60 px-1.5 py-0 shrink-0"
                   >{acct.race}</Badge
                 >
               {/if}
               {#if acct.regionLabel}
                 <Badge
                   variant="secondary"
-                  class="text-[10px] bg-sky-500/10 border border-sky-500/30 text-sky-500 px-1.5 py-0 shrink-0"
+                  class="text-[11px] bg-sky-500/10 border border-sky-500/30 text-sky-500 px-1.5 py-0 shrink-0"
                   >{acct.regionLabel}</Badge
                 >
               {/if}
@@ -5529,18 +5899,18 @@
                 href={acct.bnet_url}
                 target="_blank"
                 rel="noopener"
-                class="block font-mono text-[10px] text-primary/80 hover:underline break-all"
+                class="block font-mono text-[11px] text-primary/80 hover:underline break-all"
                 >{acct.toon_handle || acct.bnet_url} ↗</a
               >
             {:else if acct.toon_handle}
-              <span class="block font-mono text-[10px] text-muted-foreground break-all"
+              <span class="block font-mono text-[11px] text-muted-foreground break-all"
                 >{acct.toon_handle}</span
               >
             {/if}
           </div>
           <div class="flex flex-col items-stretch sm:items-end gap-1.5 shrink-0">
             <div class="flex items-center gap-2 justify-between sm:justify-end">
-              <span class="text-[10px] text-muted-foreground shrink-0"
+              <span class="text-[11px] text-muted-foreground shrink-0"
                 >对应选手:</span
               >
               <select
@@ -5556,7 +5926,7 @@
               </select>
             </div>
             <label
-              class="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer select-none justify-end"
+              class="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer select-none justify-end"
             >
               <input
                 type="checkbox"
@@ -5626,7 +5996,7 @@
             <span class="text-xs font-semibold text-foreground">
               #{matchOrder.get(m.id)} · {roundLabel(m.round, totalRounds)} · 场次 {m.position}
             </span>
-            <Badge variant="outline" class="text-[10px]">待赛</Badge>
+            <Badge variant="outline" class="text-[11px]">待赛</Badge>
           </div>
           <div class="mt-1 text-xs text-foreground/90">
             {playerName(m.player1_id)}
@@ -5665,7 +6035,7 @@
           <ItemIcon class="w-4 h-4 text-muted-foreground shrink-0" />
           <div class="min-w-0">
             <div class="text-xs font-semibold text-foreground">{item.label}</div>
-            <div class="text-[10px] text-muted-foreground">{item.desc}</div>
+            <div class="text-[11px] text-muted-foreground">{item.desc}</div>
           </div>
         </label>
       {/each}

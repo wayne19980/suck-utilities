@@ -4,10 +4,11 @@
   import { Toaster, toast } from "svelte-sonner";
   import { userState } from "$lib/user.svelte.js";
   import { API } from "$lib/api.js";
-  import { isRecentlySeen } from "$lib/players.js";
+import { isRecentlyActive, activityLabel } from "$lib/players.js";
   import { timeZoneOverride, setTimeZoneOverride } from "$lib/timezone.svelte.js";
   import { page } from "$app/stores";
   import { ModeWatcher, toggleMode } from "mode-watcher";
+  import * as Accordion from "$lib/components/ui/accordion/index.js";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
@@ -19,7 +20,7 @@
   import MoonIcon from "@lucide/svelte/icons/moon";
   import PlusIcon from "@lucide/svelte/icons/plus";
   import TrendingUpIcon from "@lucide/svelte/icons/trending-up";
-  import SwordsIcon from "@lucide/svelte/icons/swords";
+  import FlaskConicalIcon from "@lucide/svelte/icons/flask-conical";
   import BellIcon from "@lucide/svelte/icons/bell";
   import BellOffIcon from "@lucide/svelte/icons/bell-off";
 
@@ -28,12 +29,11 @@
   let openIdDialog = $state(false);
   let idInput = $state("");
   let existingPlayers = $state([]);
-  let showInactiveExisting = $state(false);
   let activeExistingPlayers = $derived(
-    existingPlayers.filter((p) => isRecentlySeen(p.last_seen_at)),
+    existingPlayers.filter((p) => isRecentlyActive(p)),
   );
   let inactiveExistingPlayers = $derived(
-    existingPlayers.filter((p) => !isRecentlySeen(p.last_seen_at)),
+    existingPlayers.filter((p) => !isRecentlyActive(p)),
   );
   let qqInput = $state("");
   let qqError = $state("");
@@ -464,6 +464,17 @@
             <span class="hidden md:inline">选手列表</span>
           </a>
           <a
+            href="/rating-lab"
+            title="评分实验室"
+            class="flex items-center gap-1 px-2 sm:px-3 h-8 rounded-md text-xs sm:text-sm font-medium transition-colors shrink-0 whitespace-nowrap
+              {$page.url.pathname === '/rating-lab'
+              ? 'text-primary font-semibold bg-primary/8'
+              : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'}"
+          >
+            <FlaskConicalIcon class="w-3.5 h-3.5" />
+            <span class="hidden md:inline">评分实验室</span>
+          </a>
+          <a
             href="/stats"
             title="数据统计"
             class="flex items-center gap-1 px-2 sm:px-3 h-8 rounded-md text-xs sm:text-sm font-medium transition-colors shrink-0 whitespace-nowrap
@@ -473,17 +484,6 @@
           >
             <TrendingUpIcon class="w-3.5 h-3.5" />
             <span class="hidden md:inline">数据统计</span>
-          </a>
-          <a
-            href="/ladder"
-            title="天梯"
-            class="flex items-center gap-1 px-2 sm:px-3 h-8 rounded-md text-xs sm:text-sm font-medium transition-colors shrink-0 whitespace-nowrap
-              {$page.url.pathname === '/ladder'
-              ? 'text-primary font-semibold bg-primary/8'
-              : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'}"
-          >
-            <SwordsIcon class="w-3.5 h-3.5" />
-            <span class="hidden md:inline">天梯</span>
           </a>
         </nav>
 
@@ -537,7 +537,7 @@
             class="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-muted/60 transition-colors text-sm cursor-pointer group"
           >
             <div
-              class="w-6 h-6 rounded-full bg-linear-to-br {avatarGradient} flex items-center justify-center text-[10px] font-bold text-white uppercase shrink-0"
+              class="w-6 h-6 rounded-full bg-linear-to-br {avatarGradient} flex items-center justify-center text-[11px] font-bold text-white uppercase shrink-0"
             >
               {userState.id ? userState.id.slice(0, 2) : "?"}
             </div>
@@ -547,7 +547,7 @@
               >
                 {userState.id || "游客模式"}
               </div>
-              <div class="text-[10px] text-muted-foreground leading-none">
+              <div class="text-[11px] text-muted-foreground leading-none">
                 {userState.qqGroup ? `群: ${userState.qqGroup}` : "未登录"}
               </div>
             </div>
@@ -608,7 +608,7 @@
               class="text-xs h-8 bg-background border-border text-foreground"
             />
             {#if qqError}
-              <p class="text-[9px] text-destructive font-medium animate-pulse">
+              <p class="text-[11px] text-destructive font-medium animate-pulse">
                 {qqError}
               </p>
             {/if}
@@ -664,7 +664,7 @@
                 class="text-[11px] font-bold text-muted-foreground flex items-center justify-between"
               >
                 <span>中国服务器 (CN)</span>
-                <span class="text-[10px] text-muted-foreground/60 font-normal"
+                <span class="text-[11px] text-muted-foreground/60 font-normal"
                   >已添加 {editBattleTags.cn.length} 个</span
                 >
               </span>
@@ -675,7 +675,7 @@
                 {#each editBattleTags.cn as tag, idx}
                   <Badge
                     variant="secondary"
-                    class="text-[9px] font-mono py-0.5 px-1.5 bg-muted border border-border/80 text-foreground flex items-center gap-1"
+                    class="text-[11px] font-mono py-0.5 px-1.5 bg-muted border border-border/80 text-foreground flex items-center gap-1"
                   >
                     {tag}
                     <button
@@ -691,7 +691,7 @@
                 {/each}
                 {#if editBattleTags.cn.length === 0}
                   <span
-                    class="text-[10px] text-muted-foreground/50 italic self-center px-1"
+                    class="text-[11px] text-muted-foreground/50 italic self-center px-1"
                     >暂无账号</span
                   >
                 {/if}
@@ -741,7 +741,7 @@
                 class="text-[11px] font-bold text-muted-foreground flex items-center justify-between"
               >
                 <span>国际服务器 (Global)</span>
-                <span class="text-[10px] text-muted-foreground/60 font-normal"
+                <span class="text-[11px] text-muted-foreground/60 font-normal"
                   >已添加 {editBattleTags.global.length} 个</span
                 >
               </span>
@@ -752,7 +752,7 @@
                 {#each editBattleTags.global as tag, idx}
                   <Badge
                     variant="secondary"
-                    class="text-[9px] font-mono py-0.5 px-1.5 bg-muted border border-border/80 text-foreground flex items-center gap-1"
+                    class="text-[11px] font-mono py-0.5 px-1.5 bg-muted border border-border/80 text-foreground flex items-center gap-1"
                   >
                     {tag}
                     <button
@@ -768,7 +768,7 @@
                 {/each}
                 {#if editBattleTags.global.length === 0}
                   <span
-                    class="text-[10px] text-muted-foreground/50 italic self-center px-1"
+                    class="text-[11px] text-muted-foreground/50 italic self-center px-1"
                     >暂无账号</span
                   >
                 {/if}
@@ -853,7 +853,7 @@
             placeholder="例如: User:Bnet"
             class="text-xs h-8 bg-background border-border text-foreground"
           />
-          <p class="text-[10px] text-muted-foreground/60">
+          <p class="text-[11px] text-muted-foreground/60">
             Liquipedia Wiki 页面名称，最终将链接至
             https://liquipedia.net/starcraft2/&lt;名称&gt;
           </p>
@@ -870,7 +870,7 @@
             {#each editBnetIds as b}
               <Badge
                 variant="secondary"
-                class="text-[9px] font-mono bg-muted/65 border border-border/60 px-1.5 py-0.5"
+                class="text-[11px] font-mono bg-muted/65 border border-border/60 px-1.5 py-0.5"
               >
                 {#if b.url}
                   <a
@@ -886,7 +886,7 @@
             {/each}
             {#if editBnetIds.length === 0}
               <span
-                class="text-[10px] text-muted-foreground/50 italic self-center px-1"
+                class="text-[11px] text-muted-foreground/50 italic self-center px-1"
                 >暂无关联的游戏账号</span
               >
             {/if}
@@ -909,7 +909,7 @@
             class="bg-background border-border text-foreground"
           />
           {#if qqError}
-            <p class="text-[10px] text-destructive font-medium animate-pulse">
+            <p class="text-[11px] text-destructive font-medium animate-pulse">
               {qqError}
             </p>
           {/if}
@@ -935,14 +935,14 @@
         {#if existingPlayers.length > 0}
           <div class="space-y-1.5">
             <span class="text-xs font-medium text-muted-foreground block"
-              >快捷选择最近一年活跃的选手 ID：</span
+              >快捷选择最近一年有对局的选手 ID：</span
             >
             <div class="flex flex-wrap gap-1.5 max-h-25 overflow-y-auto pr-1">
               {#each activeExistingPlayers as p}
                 <button
                   type="button"
                   onclick={() => (idInput = p.id)}
-                  title={p.last_seen_at ? `最近活跃: ${new Date(p.last_seen_at).toLocaleDateString("zh-CN")}` : "无登录记录"}
+                  title={activityLabel(p)}
                   class="text-[11px] px-2 py-0.5 rounded bg-muted hover:bg-primary hover:text-primary-foreground border border-border/80 transition-colors cursor-pointer {idInput ===
                   p.id
                     ? 'bg-primary text-primary-foreground border-primary font-bold'
@@ -951,37 +951,42 @@
                   {p.display_name}
                 </button>
               {:else}
-                <span class="text-[10px] text-muted-foreground/60 italic px-1">
-                  暂无最近一年活跃的选手
+                <span class="text-[11px] text-muted-foreground/60 italic px-1">
+                  暂无最近一年有对局的选手
                 </span>
               {/each}
             </div>
             {#if inactiveExistingPlayers.length > 0}
-              <details
-                class="mt-1 rounded-lg border border-border/60 bg-muted/20 px-2 py-1.5"
-                bind:open={showInactiveExisting}
+              <Accordion.Root
+                type="single"
+                collapsible
+                class="mt-1 rounded-lg border border-border/60 bg-muted/20 px-2"
               >
-                <summary
-                  class="text-[10px] text-muted-foreground cursor-pointer select-none"
-                >
-                  显示一年未登录的选手（{inactiveExistingPlayers.length}）
-                </summary>
-                <div class="flex flex-wrap gap-1.5 max-h-25 overflow-y-auto pr-1 mt-1.5">
-                  {#each inactiveExistingPlayers as p}
-                    <button
-                      type="button"
-                      onclick={() => (idInput = p.id)}
-                      title={p.last_seen_at ? `最近活跃: ${new Date(p.last_seen_at).toLocaleDateString("zh-CN")}` : "无登录记录"}
-                      class="text-[11px] px-2 py-0.5 rounded bg-muted/70 hover:bg-primary hover:text-primary-foreground border border-border/80 transition-colors cursor-pointer {idInput ===
-                      p.id
-                        ? 'bg-primary text-primary-foreground border-primary font-bold'
-                        : 'text-muted-foreground'}"
-                    >
-                      {p.display_name}
-                    </button>
-                  {/each}
-                </div>
-              </details>
+                <Accordion.Item value="inactive">
+                  <Accordion.Trigger
+                    class="py-1.5 text-[11px] font-normal text-muted-foreground hover:no-underline"
+                  >
+                    显示一年内无对局的选手（{inactiveExistingPlayers.length}）
+                  </Accordion.Trigger>
+                  <Accordion.Content class="pt-0 pb-1.5">
+                    <div class="flex flex-wrap gap-1.5 max-h-25 overflow-y-auto pr-1">
+                      {#each inactiveExistingPlayers as p}
+                        <button
+                          type="button"
+                          onclick={() => (idInput = p.id)}
+                          title={activityLabel(p)}
+                          class="text-[11px] px-2 py-0.5 rounded bg-muted/70 hover:bg-primary hover:text-primary-foreground border border-border/80 transition-colors cursor-pointer {idInput ===
+                          p.id
+                            ? 'bg-primary text-primary-foreground border-primary font-bold'
+                            : 'text-muted-foreground'}"
+                        >
+                          {p.display_name}
+                        </button>
+                      {/each}
+                    </div>
+                  </Accordion.Content>
+                </Accordion.Item>
+              </Accordion.Root>
             {/if}
           </div>
         {/if}

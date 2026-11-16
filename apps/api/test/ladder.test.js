@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   BASE_MMR,
   computeLadder,
+  lastGameByPlayer,
   kForGames,
   randomizeSeedOrder,
   sortForSeeds,
@@ -122,6 +123,19 @@ test("sortForSeeds puts rated players first by MMR, unrated last by registration
   );
 });
 
+test("sortForSeeds inverts the rated order for loser-advances brackets", () => {
+  const players = [
+    { id: "high", rating: 3200, games: 5, last_game_at: "2026-01-01" },
+    { id: "mid", rating: 3000, games: 5, last_game_at: "2026-01-01" },
+    { id: "low", rating: 2800, games: 5, last_game_at: "2026-01-01" },
+    { id: "u1", rating: 3000, games: 0, registered_at: "2026-01-01" },
+  ];
+  assert.deepEqual(
+    sortForSeeds(players, { descending: false }).map((p) => p.id),
+    ["low", "mid", "high", "u1"]
+  );
+});
+
 test("randomizeSeedOrder is a permutation that keeps guards and rating bands", () => {
   const ratings = [
     ["a", 3400],
@@ -198,3 +212,44 @@ test("randomizeSeedOrder handles tiny lists without moving players", () => {
   assert.deepEqual(result.map((p) => p.id), ["a", "b"]);
 });
 
+test("randomizeSeedOrder respects inverted guards for loser-advances", () => {
+  const players = [
+    ["a", 2800],
+    ["b", 2810],
+    ["c", 2820],
+    ["d", 3000],
+    ["e", 3010],
+    ["f", 3020],
+  ].map(([id, rating]) => ({
+    id,
+    rating,
+    games: 10,
+    last_game_at: "2026-01-01",
+  }));
+
+  const result = randomizeSeedOrder(players, {
+    descending: false,
+    keepTop: 1,
+    keepBottom: 1,
+    rng: mulberry32(9),
+  });
+
+  assert.equal(result.length, players.length);
+  assert.equal(result[0].id, "a");
+  assert.equal(result.at(-1).id, "f");
+});
+
+
+test("lastGameByPlayer mirrors the ladder's played_at ordering", () => {
+  const games = [
+    { player1_id: "a", player2_id: "b", played_at: "2026-01-01T12:00:00Z" },
+    { player1_id: "b", player2_id: "c", played_at: "2026-03-01T12:00:00Z" },
+    { player1_id: "a", player2_id: "c", played_at: "2026-02-01T12:00:00Z" },
+  ];
+  const latest = lastGameByPlayer(games);
+  assert.equal(latest.get("a"), Date.parse("2026-02-01T12:00:00Z"));
+  assert.equal(latest.get("b"), Date.parse("2026-03-01T12:00:00Z"));
+  assert.equal(latest.get("c"), Date.parse("2026-03-01T12:00:00Z"));
+  assert.equal(latest.size, 3);
+  assert.equal(lastGameByPlayer([{ player1_id: "a" }]).size, 0);
+});

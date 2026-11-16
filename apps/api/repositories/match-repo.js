@@ -1,4 +1,10 @@
-import { describeBracket } from '../lib/bracket.js';
+import { describeBracket, findLateEntrySlot } from '../lib/bracket.js';
+
+function httpError(statusCode, message) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
+}
 
 export function MatchRepo(db) {
   async function getById(id, runner = db) {
@@ -63,7 +69,7 @@ export function MatchRepo(db) {
     }
 
     const updateRes = await db.query(`
-      UPDATE axsuck.matches SET score1 = $1, score2 = $2, winner_id = $3, status = 'completed'
+      UPDATE axsuck.matches SET score1 = $1, score2 = $2, winner_id = $3, status = 'completed', completed_at = NOW()
       WHERE id = $4
       RETURNING *
     `, [s1, s2, winnerId, id]);
@@ -169,7 +175,114 @@ export function MatchRepo(db) {
     await db.query('DELETE FROM axsuck.matches WHERE tournament_id = $1', [tournamentId]);
   }
 
-  return { getById, getByTournament, create, submitResult, generateBracket, advanceWinner, clearMatches };
+  /**
+   * Add a player mid-tournament without regenerating the bracket.
+   *
+   * The only safe slot is a first-round bye whose downstream match has not been
+   * played. The new player takes the empty side, the bye becomes a real match,
+   * and the lone player's pre-filled downstream slot is cleared until the result
+   * is reported (advanceWinner then fills it normally).
+   */
+  async function addLateEntry(tournamentId, playerId) {
+    const client = await db.connect();
+    let matchId;
+    let nextMatchId;
+    try {
+      await client.query('BEGIN');
+
+      const tourneyRes = await client.query(`
+        SELECT id, status, player_capacity, active_match_id
+        FROM axsuck.tournaments WHERE id = $1 FOR UPDATE
+      `, [tournamentId]);
+      const tournament = tourneyRes.rows[0];
+      if (!tournament) throw httpError(404, 'Tournament not found');
+      if (tournament.status !== 'in_progress') {
+        throw httpError(409, 'Late entry is only available while the tournament is in progress');
+      }
+
+      const existing = await client.query(`
+        SELECT 1 FROM axsuck.tournament_players
+        WHERE tournament_id = $1 AND player_id = $2
+      `, [tournamentId, playerId]);
+      if (existing.rows.length > 0) throw httpError(409, 'Already registered');
+
+      const countRes = await client.query(`
+        SELECT COUNT(*)::int AS cnt FROM axsuck.tournament_players WHERE tournament_id = $1
+      `, [tournamentId]);
+      const playerCount = countRes.rows[0]?.cnt || 0;
+      if (playerCount >= tournament.player_capacity) {
+        throw httpError(409, 'Tournament is full');
+      }
+
+      const seedRows = (await client.query(`
+        SELECT player_id, seed FROM axsuck.tournament_players WHERE tournament_id = $1
+      `, [tournamentId])).rows;
+      const playerSeeds = new Map(seedRows.map((row) => [row.player_id, row.seed]));
+
+      const rows = (await client.query(`
+        SELECT * FROM axsuck.matches WHERE tournament_id = $1 ORDER BY round DESC, position ASC FOR UPDATE
+      `, [tournamentId])).rows;
+      const firstRound = Math.max(0, ...rows.map((m) => Number(m.round) || 0));
+      const bracketSize = firstRound > 0 ? 2 ** firstRound : 0;
+      // Normal seeding gives byes to 1..P-n; the new player is seed n+1 and
+      // therefore faces the last bye (seed P-n) without moving anyone else.
+      const lastByeSeed = bracketSize > playerCount ? bracketSize - playerCount : null;
+      const slot = findLateEntrySlot(rows, {
+        activeMatchId: tournament.active_match_id,
+        playerSeeds,
+        lastByeSeed,
+      });
+      if (!slot) {
+        throw httpError(409, 'No open bye slot: the bracket is full or the next round has already started');
+      }
+
+      await client.query(`
+        INSERT INTO axsuck.players (id) VALUES ($1) ON CONFLICT (id) DO NOTHING
+      `, [playerId]);
+      await client.query(`
+        INSERT INTO axsuck.tournament_players (tournament_id, player_id, seed)
+        VALUES ($1, $2, $3)
+      `, [tournamentId, playerId, playerCount + 1]);
+
+      if (slot.match.player1_id) {
+        await client.query(`
+          UPDATE axsuck.matches
+          SET player2_id = $1, score1 = 0, score2 = 0, winner_id = NULL,
+              status = 'pending', completed_at = NULL
+          WHERE id = $2
+        `, [playerId, slot.match.id]);
+      } else {
+        await client.query(`
+          UPDATE axsuck.matches
+          SET player1_id = $1, score1 = 0, score2 = 0, winner_id = NULL,
+              status = 'pending', completed_at = NULL
+          WHERE id = $2
+        `, [playerId, slot.match.id]);
+      }
+
+      if (slot.slotKey === 'player1_id') {
+        await client.query('UPDATE axsuck.matches SET player1_id = NULL WHERE id = $1', [slot.nextMatch.id]);
+      } else {
+        await client.query('UPDATE axsuck.matches SET player2_id = NULL WHERE id = $1', [slot.nextMatch.id]);
+      }
+
+      await client.query('COMMIT');
+      matchId = slot.match.id;
+      nextMatchId = slot.nextMatch.id;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    return {
+      match: await getById(matchId),
+      next_match: await getById(nextMatchId),
+    };
+  }
+
+  return { getById, getByTournament, create, submitResult, generateBracket, advanceWinner, clearMatches, addLateEntry };
 }
 
 function getSeedingOrder(size) {

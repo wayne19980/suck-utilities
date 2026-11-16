@@ -28,6 +28,28 @@ export function daysAgo(value) {
 }
 
 
+export const MMR_CHART_MODE_KEY = "suck:mmr-chart-mode";
+export const MMR_CHART_MODES = ["time", "game"];
+
+export function readMmrChartMode() {
+  try {
+    const saved = localStorage.getItem(MMR_CHART_MODE_KEY);
+    return MMR_CHART_MODES.includes(saved) ? saved : "time";
+  } catch {
+    return "time";
+  }
+}
+
+export function writeMmrChartMode(mode) {
+  try {
+    if (MMR_CHART_MODES.includes(mode)) {
+      localStorage.setItem(MMR_CHART_MODE_KEY, mode);
+    }
+  } catch {
+    // localStorage can be unavailable (private mode); the choice just isn't persisted.
+  }
+}
+
 /**
  * Turn the API's newest-first history into an ascending chart series.
  * - game mode: x = 0..N (0 is the rating before the first game)

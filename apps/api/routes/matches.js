@@ -28,7 +28,7 @@ export default async function matchesRoutes(fastify) {
     if (!match) throw fastify.httpErrors.notFound('Match not found');
 
     await fastify.db.query(`
-      UPDATE axsuck.matches SET status = 'walkover', winner_id = $1, score1 = 0, score2 = 0
+      UPDATE axsuck.matches SET status = 'walkover', winner_id = $1, score1 = 0, score2 = 0, completed_at = NOW()
       WHERE id = $2
     `, [winner_id, match.id]);
 
@@ -60,6 +60,22 @@ export default async function matchesRoutes(fastify) {
     return match;
   });
 
+  fastify.post('/tournaments/:id/late-entry', async (req) => {
+    const player_id = String(req.body?.player_id || '').trim();
+    if (!player_id) throw fastify.httpErrors.badRequest('player_id is required');
+
+    const result = await repo.addLateEntry(req.params.id, player_id);
+
+    // Trigger real-time broadcast
+    fastify.tournamentEvents.emit(`update:${req.params.id}`, {
+      type: 'late_entry',
+      player_id,
+      matchId: result.match.id,
+    });
+
+    return result;
+  });
+
   fastify.delete('/tournaments/:id/matches', async (req) => {
     await repo.clearMatches(req.params.id);
 
@@ -84,7 +100,7 @@ export default async function matchesRoutes(fastify) {
         if (!m) return;
 
         await client.query(`
-          UPDATE axsuck.matches SET score1 = 0, score2 = 0, winner_id = NULL, status = 'pending'
+          UPDATE axsuck.matches SET score1 = 0, score2 = 0, winner_id = NULL, status = 'pending', completed_at = NULL
           WHERE id = $1
         `, [mId]);
 

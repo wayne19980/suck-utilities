@@ -381,7 +381,7 @@
                   {#if p.team}
                     <Badge
                       variant="outline"
-                      class="text-[10px] px-1.5 py-0 bg-secondary/10 text-secondary border-secondary/25 font-semibold"
+                      class="text-[11px] px-1.5 py-0 bg-secondary/10 text-secondary border-secondary/25 font-semibold"
                     >
                       {p.team}
                     </Badge>
@@ -406,7 +406,7 @@
                     {#each tags.cn as tag}
                       <Badge
                         variant="secondary"
-                        class="text-[10px] font-mono bg-red-500/10 text-red-500 border border-red-500/20 px-1.5 py-0 shrink-0"
+                        class="text-[11px] font-mono bg-red-500/10 text-red-500 border border-red-500/20 px-1.5 py-0 shrink-0"
                       >
                         CN: {tag}
                       </Badge>
@@ -414,7 +414,7 @@
                     {#each tags.global as tag}
                       <Badge
                         variant="secondary"
-                        class="text-[10px] font-mono bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0 shrink-0"
+                        class="text-[11px] font-mono bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0 shrink-0"
                       >
                         Global: {tag}
                       </Badge>
@@ -541,7 +541,7 @@
                   {#if p.team}
                     <Badge
                       variant="outline"
-                      class="text-[9px] px-1.5 py-0 bg-secondary/15 text-secondary border-secondary/25 font-semibold"
+                      class="text-[11px] px-1.5 py-0 bg-secondary/15 text-secondary border-secondary/25 font-semibold"
                     >
                       {p.team}
                     </Badge>
@@ -565,7 +565,7 @@
             class="grid grid-cols-2 gap-3 text-xs border-t border-b border-border/40 py-2.5 my-2"
           >
             <div>
-              <span class="text-[10px] text-muted-foreground block mb-0.5"
+              <span class="text-[11px] text-muted-foreground block mb-0.5"
                 >国籍 / 地区</span
               >
               <span class="text-foreground text-xs flex items-center gap-1">
@@ -574,7 +574,7 @@
               </span>
             </div>
             <div>
-              <span class="text-[10px] text-muted-foreground block mb-0.5"
+              <span class="text-[11px] text-muted-foreground block mb-0.5"
                 >Liquipedia</span
               >
               {#if p.link}
@@ -599,14 +599,14 @@
           <!-- Footer: BattleTags & IP -->
           <div class="grid grid-cols-2 gap-3 pt-1 min-w-0">
             <div class="space-y-1 min-w-0">
-              <span class="text-[10px] text-muted-foreground block"
+              <span class="text-[11px] text-muted-foreground block"
                 >BattleTags</span
               >
               <div class="flex flex-wrap gap-1">
                 {#each tags.cn as tag}
                   <Badge
                     variant="secondary"
-                    class="text-[9px] font-mono bg-red-500/10 text-red-500 border border-red-500/20 px-1.5 py-0"
+                    class="text-[11px] font-mono bg-red-500/10 text-red-500 border border-red-500/20 px-1.5 py-0"
                   >
                     CN: {tag}
                   </Badge>
@@ -614,24 +614,24 @@
                 {#each tags.global as tag}
                   <Badge
                     variant="secondary"
-                    class="text-[9px] font-mono bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0"
+                    class="text-[11px] font-mono bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0"
                   >
                     Global: {tag}
                   </Badge>
                 {/each}
                 {#if tags.cn.length === 0 && tags.global.length === 0}
-                  <span class="text-[10px] text-muted-foreground/45 italic"
+                  <span class="text-[11px] text-muted-foreground/45 italic"
                     >未设置</span
                   >
                 {/if}
               </div>
             </div>
             <div class="space-y-1 min-w-0">
-              <span class="text-[10px] text-muted-foreground block"
+              <span class="text-[11px] text-muted-foreground block"
                 >上次活跃 IP</span
               >
               <span
-                class="text-[10px] font-mono text-muted-foreground/80 block truncate"
+                class="text-[11px] font-mono text-muted-foreground/80 block truncate"
                 title={p.last_ip || "—"}
                 >{p.last_ip || "—"}</span
               >
@@ -689,7 +689,7 @@
           placeholder="例如: Bnet"
           class="text-xs h-8 bg-background"
         />
-        <p class="text-[10px] text-muted-foreground/60">
+        <p class="text-[11px] text-muted-foreground/60">
           选手的唯一 ID 标识，若修改将同步更新其历史对阵、报名和投票数据。
         </p>
       </div>
@@ -708,7 +708,7 @@
               class="text-[11px] font-bold text-muted-foreground flex items-center justify-between"
             >
               <span>中国服务器 (CN)</span>
-              <span class="text-[10px] text-muted-foreground/60 font-normal"
+              <span class="text-[11px] text-muted-foreground/60 font-normal"
                 >已添加 {editBattleTags.cn.length} 个</span
               >
             </span>
@@ -720,7 +720,7 @@
               {#each editBattleTags.cn as tag, idx}
                 <Badge
                   variant="secondary"
-                  class="text-[10px] font-mono py-0.5 px-2 bg-muted border border-border/80 text-foreground flex items-center gap-1"
+                  class="text-[11px] font-mono py-0.5 px-2 bg-muted border border-border/80 text-foreground flex items-center gap-1"
                 >
                   {tag}
                   <button
@@ -736,7 +736,7 @@
               {/each}
               {#if editBattleTags.cn.length === 0}
                 <span
-                  class="text-[10px] text-muted-foreground/50 italic self-center px-1"
+                  class="text-[11px] text-muted-foreground/50 italic self-center px-1"
                   >暂无账号</span
                 >
               {/if}
@@ -785,7 +785,7 @@
               class="text-[11px] font-bold text-muted-foreground flex items-center justify-between"
             >
               <span>国际服务器 (Global)</span>
-              <span class="text-[10px] text-muted-foreground/60 font-normal"
+              <span class="text-[11px] text-muted-foreground/60 font-normal"
                 >已添加 {editBattleTags.global.length} 个</span
               >
             </span>
@@ -797,7 +797,7 @@
               {#each editBattleTags.global as tag, idx}
                 <Badge
                   variant="secondary"
-                  class="text-[10px] font-mono py-0.5 px-2 bg-muted border border-border/80 text-foreground flex items-center gap-1"
+                  class="text-[11px] font-mono py-0.5 px-2 bg-muted border border-border/80 text-foreground flex items-center gap-1"
                 >
                   {tag}
                   <button
@@ -813,7 +813,7 @@
               {/each}
               {#if editBattleTags.global.length === 0}
                 <span
-                  class="text-[10px] text-muted-foreground/50 italic self-center px-1"
+                  class="text-[11px] text-muted-foreground/50 italic self-center px-1"
                   >暂无账号</span
                 >
               {/if}
@@ -895,7 +895,7 @@
           placeholder="例如: User:Bnet"
           class="text-xs h-8"
         />
-        <p class="text-[10px] text-muted-foreground/60">
+        <p class="text-[11px] text-muted-foreground/60">
           Liquipedia Wiki 页面名称，最终将链接至
           https://liquipedia.net/starcraft2/&lt;名称&gt;
         </p>
@@ -912,7 +912,7 @@
           {#each editBnetIds as b, i (i)}
             <Badge
               variant="secondary"
-              class="text-[10px] font-mono bg-muted/65 border border-border/60 px-2 py-0.5 gap-1"
+              class="text-[11px] font-mono bg-muted/65 border border-border/60 px-2 py-0.5 gap-1"
             >
               {#if b.url}
                 <a
@@ -941,12 +941,12 @@
           {/each}
           {#if editBnetIds.length === 0}
             <span
-              class="text-[10px] text-muted-foreground/50 italic self-center px-1"
+              class="text-[11px] text-muted-foreground/50 italic self-center px-1"
               >暂无关联的录像账号，系统将在解析比赛录像时自动匹配并填入。</span
             >
           {/if}
         </div>
-        <p class="text-[10px] text-muted-foreground/60">
+        <p class="text-[11px] text-muted-foreground/60">
           此处为全局账号；仅在某届赛事临时使用的账号请到该赛事的「账号关联」里管理。
         </p>
       </div>
@@ -981,7 +981,7 @@
               执行合并
             </Button>
           </div>
-          <p class="text-[10px] text-muted-foreground/60">
+          <p class="text-[11px] text-muted-foreground/60">
             合并后此选手的所有对阵、报名、投票数据将转移到目标选手，并删除此选手。
           </p>
         </div>

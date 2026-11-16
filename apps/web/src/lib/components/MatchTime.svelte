@@ -42,13 +42,13 @@
     <div class="min-w-0">
       <div class="flex flex-wrap items-baseline gap-x-2 font-bold text-primary">
         <span class="tabular-nums">{formatInZone(instant, zone)}</span>
-        <span class="text-[10px] font-semibold text-primary/70">
+        <span class="text-[11px] font-semibold text-primary/70">
           {differs ? `你的时间 · ${offsetLabel(viewerOffset)}` : SOURCE_LABEL}
         </span>
       </div>
       {#if differs}
         <div
-          class="text-[10px] text-muted-foreground tabular-nums"
+          class="text-[11px] text-muted-foreground tabular-nums"
           title="赛事以北京时间（{SOURCE_TIME_ZONE}）安排"
         >
           {SOURCE_LABEL} {formatInZone(instant, SOURCE_TIME_ZONE)}
@@ -58,7 +58,7 @@
     {#if showCountdown && clock}
       {#if clock.phase === "before"}
         <div class="flex items-baseline gap-1 rounded-lg bg-background/60 px-2 py-1">
-          <span class="text-[10px] text-muted-foreground">距开赛</span>
+          <span class="text-[11px] text-muted-foreground">距开赛</span>
           <span class="font-mono text-sm font-black tabular-nums text-foreground"
             >{clock.text}</span
           >
