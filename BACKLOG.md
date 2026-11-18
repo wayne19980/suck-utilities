@@ -12,7 +12,7 @@
 - 大屏抽成 `src/lib/components/TournamentOverlay.svelte`；`/tournament/:id/overlay` 变薄壳，新增
   `/overlay?user=<选手ID>`（OBS 固定地址，换赛事不用改地址）。
 - `axsuck.broadcasts`（迁移 `008`）：一人一行，开播/换赛事/结束都写这一行；写操作使用无状态
-  HS256 stream key（`STREAM_KEY_SECRET`，180 天），读公开。
+  HS256 stream key（secret 首次启动自动生成并存 `axsuck.app_secrets`（迁移 `010`），`STREAM_KEY_SECRET` 仅作覆盖 / 轮换；180 天），读公开。
 - 赛事页「我要直播 / 选下一场 / 结束直播」写会话并展示固定直播链接。
 
 ### 比分填报升级（BO1 / BO3 / BO5 / BO7）

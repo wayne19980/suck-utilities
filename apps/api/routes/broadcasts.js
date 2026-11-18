@@ -1,5 +1,5 @@
 import { BroadcastRepo } from '../repositories/broadcast-repo.js';
-import { signStreamKey, verifyStreamKey } from '../lib/stream-key.js';
+import { initStreamSecret, signStreamKey, verifyStreamKey } from '../lib/stream-key.js';
 import { isAllowedQQGroup } from '../lib/qq-groups.js';
 
 // Identity for broadcast writes is a stateless HS256 stream key whose subject is
@@ -8,6 +8,13 @@ import { isAllowedQQGroup } from '../lib/qq-groups.js';
 // replay upload, so this is a transport change, not real authentication.
 export default async function broadcastsRoutes(fastify) {
   const repo = BroadcastRepo(fastify.db);
+
+  // Generate once and persist in app_secrets, so operators do not have to set
+  // STREAM_KEY_SECRET. A failed init only means the request path keeps using
+  // the env override / development fallback.
+  await initStreamSecret(fastify.db).catch((err) => {
+    fastify.log.error({ err }, 'stream key secret init failed; keeping the fallback secret');
+  });
 
   // api.js URI-encodes both headers before sending them.
   function header(req, name) {

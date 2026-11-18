@@ -1,23 +1,69 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto';
 
 // Stateless stream key: a compact HS256 JWT whose `sub` is the player id.
-// There is no key table; rotation only needs a new STREAM_KEY_SECRET.
+// There is no key table; the signing secret is generated on first boot and
+// kept in `app_secrets` (migration 010), so no .env entry is required.
+// STREAM_KEY_SECRET still overrides it, which is how to rotate the secret.
 const ALG = 'HS256';
 const TYP = 'JWT';
 const SCOPE = 'broadcast';
 export const STREAM_KEY_TTL_SECONDS = 180 * 24 * 60 * 60;
 const DEV_SECRET = 'dev-insecure-stream-key';
 const CLOCK_SKEW_SECONDS = 300;
+const SECRET_NAME = 'stream_key';
 
 let warnedMissingSecret = false;
+let cachedSecret = null;
+
+// Load (or create) the persisted secret. Called once while the broadcasts
+// routes are registered, before the server accepts requests. An explicit
+// STREAM_KEY_SECRET wins and is never written to the database.
+export async function initStreamSecret(db) {
+  const configured = (process.env.STREAM_KEY_SECRET || '').trim();
+  if (configured) {
+    cachedSecret = configured;
+    return cachedSecret;
+  }
+  if (cachedSecret) return cachedSecret;
+  if (!db) return streamKeySecret();
+
+  const existing = await db.query(
+    'SELECT value FROM axsuck.app_secrets WHERE name = $1',
+    [SECRET_NAME]
+  );
+  if (existing.rows[0]?.value) {
+    cachedSecret = existing.rows[0].value;
+    return cachedSecret;
+  }
+
+  // Two instances may start together: the loser of the INSERT race reads the
+  // winner's value back instead of using its own.
+  const generated = randomBytes(32).toString('base64url');
+  await db.query(
+    'INSERT INTO axsuck.app_secrets (name, value) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING',
+    [SECRET_NAME, generated]
+  );
+  const stored = await db.query(
+    'SELECT value FROM axsuck.app_secrets WHERE name = $1',
+    [SECRET_NAME]
+  );
+  cachedSecret = stored.rows[0]?.value || generated;
+  return cachedSecret;
+}
+
+// Test hook: forget the cached secret so a later init() starts from scratch.
+export function resetStreamSecretCache() {
+  cachedSecret = null;
+}
 
 export function streamKeySecret() {
   const configured = (process.env.STREAM_KEY_SECRET || '').trim();
   if (configured) return configured;
+  if (cachedSecret) return cachedSecret;
   if (!warnedMissingSecret) {
     warnedMissingSecret = true;
     console.warn(
-      '[stream-key] STREAM_KEY_SECRET is not set; falling back to an insecure development secret.'
+      '[stream-key] No STREAM_KEY_SECRET or stored secret; falling back to an insecure development secret.'
     );
   }
   return DEV_SECRET;
