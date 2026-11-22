@@ -20,7 +20,8 @@ import {
   bnetEntryKey,
   parseBnetIdsField,
   flattenReplayPlayers,
-  describeReplayAccount
+  describeReplayAccount,
+  getPlayerInfoFromReplay
 } from '../lib/replay-identity.js';
 
 // Keep the historical module surface: callers import these from the route file.

@@ -10,6 +10,7 @@ import databasePlugin from '../plugins/database.js';
 import tournamentsRoutes from '../routes/tournaments.js';
 import playersRoutes from '../routes/players.js';
 import matchesRoutes from '../routes/matches.js';
+import replaysRoutes from '../routes/replays.js';
 import votesRoutes from '../routes/votes.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,6 +27,7 @@ async function test() {
   await fastify.register(tournamentsRoutes, { prefix: '/api' });
   await fastify.register(playersRoutes, { prefix: '/api' });
   await fastify.register(matchesRoutes, { prefix: '/api' });
+  await fastify.register(replaysRoutes, { prefix: '/api' });
   await fastify.register(votesRoutes, { prefix: '/api' });
 
   await fastify.ready();
@@ -56,6 +58,17 @@ async function test() {
     console.log(`GET /api/tournaments/${firstId} status:`, resDetail.statusCode);
     const detail = JSON.parse(resDetail.body);
     console.log(`Tournament [${detail.name}] has ${detail.players.length} players, ${detail.matches.length} matches`);
+
+    // Wiki export touches replay rows and the replay-identity helpers; a
+    // ReferenceError there (e.g. a removed import) only shows up at request
+    // time, so exercise it in the smoke test.
+    const resWiki = await fastify.inject({ method: 'GET', url: `/api/tournaments/${firstId}/wiki` });
+    console.log(`GET /api/tournaments/${firstId}/wiki status:`, resWiki.statusCode);
+    if (resWiki.statusCode !== 200) {
+      console.error(resWiki.body);
+      throw new Error(`wiki route failed with ${resWiki.statusCode}`);
+    }
+    console.log(`wiki export length: ${resWiki.body.length} bytes`);
   }
 
   await fastify.close();
