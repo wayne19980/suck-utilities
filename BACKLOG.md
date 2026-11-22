@@ -37,6 +37,12 @@
   （BO1 显示建议胜者）；提交仍走 `submitResult`，BO 目标分校验和晋级规则不变。
 - overlay 的 SSE 150ms 合并已补进 `src/lib/components/TournamentOverlay.svelte`。
 
+### Liquipedia 跳转（2026-11-22）
+
+- 赛事完成区的导出按钮排新增「在 Liquipedia 打开」；Wiki 导出弹窗内也有「在 Liquipedia 打开本页」链接。
+- 路径规则：数字系列 `User:Wayne19980/suck/<N>`，SUCK ST `User:Wayne19980/suck/st<N>`；`N` 从赛事名
+  `#数字` → 名字尾部数字 → ID 尾部数字取，去掉前导零；取不到则回退 `User:Wayne19980/suck` 索引。
+
 ### 其他
 
 - 录像批量导入与结果 UI 按赛事 `loser_advances` 走胜者 / 败者晋级，不再写死 SUCK 经典规则。

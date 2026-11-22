@@ -4,6 +4,7 @@ import {
   buildMatchOrder,
   displayRound,
   maxRound,
+  liquipediaPagePath,
   playableMatchIds,
   recommendPendingMatches,
   roundLabel,
@@ -153,4 +154,19 @@ test("buildMatchOrder sorts a round by previous-round byes", () => {
   assert.equal(order.get("sf1"), 8);
   assert.equal(order.get("sf2"), 9);
   assert.equal(order.get("final"), 10);
+});
+
+test("Liquipedia page path covers the numeric SUCK series and ST suffix", () => {
+  assert.equal(liquipediaPagePath("suck52", "SUCK #52"), "User:Wayne19980/suck/52");
+  assert.equal(liquipediaPagePath("suckst7", "SUCK ST #7"), "User:Wayne19980/suck/st7");
+  assert.equal(liquipediaPagePath("suckst7", "SUCK ST #07"), "User:Wayne19980/suck/st7");
+  // Number from the id when the name has none, and leading zeros are dropped.
+  assert.equal(liquipediaPagePath("suck53", "SUCK"), "User:Wayne19980/suck/53");
+  assert.equal(liquipediaPagePath("suck052", "SUCK #052"), "User:Wayne19980/suck/52");
+  // Unrecognised series without a number falls back to the userspace index.
+  assert.equal(
+    liquipediaPagePath("misc", "League Made For Amateurs Only"),
+    "User:Wayne19980/suck",
+  );
+  assert.equal(liquipediaPagePath("suck52", "SUCK #52", "Someone"), "User:Someone/suck/52");
 });

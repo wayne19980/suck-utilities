@@ -135,3 +135,21 @@ export function recommendPendingMatches(matches = [], order = buildMatchOrder(ma
   }
   return result;
 }
+
+// Liquipedia userspace page for an event's wiki export.
+// SUCK #52 -> User:Wayne19980/suck/52; the SUCK ST series adds an `st` suffix:
+// SUCK ST #7 -> User:Wayne19980/suck/st7. Only the numeric SUCK series and ST
+// are derived for now; when no event number is found, fall back to the index.
+export function liquipediaPagePath(tournamentId, tournamentName, user = "Wayne19980") {
+  const id = String(tournamentId || "");
+  const name = String(tournamentName || "");
+  const raw =
+    name.match(/#\s*(\d+)/)?.[1] ||
+    name.match(/(\d+)\s*$/)?.[1] ||
+    id.match(/(\d+)\s*$/)?.[1] ||
+    "";
+  const number = raw.replace(/^0+(?=\d)/, "");
+  if (!number) return `User:${user}/suck`;
+  const series = id.toLowerCase().startsWith("suckst") ? "suck/st" : "suck/";
+  return `User:${user}/${series}${number}`;
+}

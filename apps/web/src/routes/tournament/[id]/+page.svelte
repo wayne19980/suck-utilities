@@ -18,7 +18,13 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { accountRegionLabel, accountKey } from "$lib/utils.js";
-  import { maxRound, roundLabel, buildMatchOrder, recommendPendingMatches } from "$lib/bracket.js";
+  import {
+    maxRound,
+    roundLabel,
+    buildMatchOrder,
+    recommendPendingMatches,
+    liquipediaPagePath,
+  } from "$lib/bracket.js";
   import TierBadge from "$lib/components/TierBadge.svelte";
 import RaceIcon from "$lib/components/RaceIcon.svelte";
   import PlayerDetail from "$lib/components/PlayerDetail.svelte";
@@ -61,6 +67,7 @@ import RaceIcon from "$lib/components/RaceIcon.svelte";
   import MonitorIcon from "@lucide/svelte/icons/monitor";
   import LayoutDashboardIcon from "@lucide/svelte/icons/layout-dashboard";
   import PencilIcon from "@lucide/svelte/icons/pencil";
+  import ExternalLinkIcon from "@lucide/svelte/icons/external-link";
 
   let tid = $derived(page.params.id);
   let tournament = $state(null);
@@ -345,6 +352,9 @@ import RaceIcon from "$lib/components/RaceIcon.svelte";
   let selectedMatch = $state(null);
   let loserAdvances = $derived(Boolean(tournament?.loser_advances ?? 1));
   let bestOf = $derived(Math.max(1, Number(tournament?.best_of) || 1));
+  let liquipediaUrl = $derived(
+    `https://liquipedia.net/starcraft2/${liquipediaPagePath(tournament?.id, tournament?.name).replace(/ /g, "_")}`,
+  );
   let bestOfTarget = $derived(Math.floor(bestOf / 2) + 1);
   let resultScore1 = $state(0);
   let resultScore2 = $state(0);
@@ -4387,7 +4397,7 @@ import RaceIcon from "$lib/components/RaceIcon.svelte";
               </div>
 
               <!-- Export data for SUCK Utilities -->
-              <div class="pt-2 flex justify-center gap-3">
+              <div class="pt-2 flex flex-wrap justify-center gap-3">
                 <Button
                   variant="outline"
                   size="sm"
@@ -4405,6 +4415,15 @@ import RaceIcon from "$lib/components/RaceIcon.svelte";
                 >
                   <FileTextIcon class="w-3.5 h-3.5" />
                   生成 Liquipedia Wiki 脚本
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onclick={() => window.open(liquipediaUrl, "_blank", "noopener,noreferrer")}
+                  class="text-xs gap-1.5 h-8 hover:bg-primary hover:text-black cursor-pointer border-primary/20"
+                >
+                  <ExternalLinkIcon class="w-3.5 h-3.5" />
+                  在 Liquipedia 打开
                 </Button>
               </div>
             </div>
@@ -5424,6 +5443,15 @@ import RaceIcon from "$lib/components/RaceIcon.svelte";
             class="w-full h-64 bg-background border border-border rounded-xl p-3 text-[11px] font-mono text-foreground focus-visible:outline-none resize-none"
           ></textarea>
         </div>
+
+        <a
+          href={liquipediaUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="inline-flex items-center gap-1 text-[11px] text-primary hover:underline"
+        >
+          <ExternalLinkIcon class="w-3.5 h-3.5" /> 在 Liquipedia 打开本页（复制粘贴后预览）
+        </a>
 
         <div class="flex gap-2">
           <Button
